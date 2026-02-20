@@ -48,8 +48,8 @@ function App() {
   const [editResolution, setEditResolution] = useState('1k');
   const [editAspectRatio, setEditAspectRatio] = useState('1:1');
   const [editBatchSize, setEditBatchSize] = useState(1);
-  const [editImageFile, setEditImageFile] = useState(null);
-  const [editImageUrl, setEditImageUrl] = useState(null);
+  const [editImageFiles, setEditImageFiles] = useState([]);
+  const [editImageUrls, setEditImageUrls] = useState([]);
   const [isUploadingEditImage, setIsUploadingEditImage] = useState(false);
   const [isGeneratingEditImage, setIsGeneratingEditImage] = useState(false);
   const [showEditSavedPrompts, setShowEditSavedPrompts] = useState(false);
@@ -402,38 +402,40 @@ function App() {
     }
   };
 
-  // 上传图片到 RunningHub
-  const uploadEditImageToRunningHub = async (file) => {
-    const formData = new FormData();
-    formData.append('file', file);
+  // 上传多张图片到 RunningHub
+  const uploadEditImagesToRunningHub = async (files) => {
+    const uploadPromises = files.map(file => {
+      const formData = new FormData();
+      formData.append('file', file);
 
-    const response = await fetch(`${API_BASE_URL}/media/upload/binary`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`
-      },
-      body: formData,
-      signal: AbortSignal.timeout(60000)
+      return fetch(`${API_BASE_URL}/media/upload/binary`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`
+        },
+        body: formData,
+        signal: AbortSignal.timeout(60000)
+      }).then(response => {
+        if (!response.ok) {
+          throw new Error(`上传失败: ${response.status}`);
+        }
+        return response.json();
+      }).then(data => {
+        if (data.code !== 0) {
+          throw new Error(data.message || '上传失败');
+        }
+        return data.data.download_url;
+      });
     });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`上传失败: ${errorText}`);
-    }
-
-    const data = await response.json();
-    if (data.code !== 0) {
-      throw new Error(data.message || '上传失败');
-    }
-
-    return data.data.download_url;
+    return Promise.all(uploadPromises);
   };
 
   // 创建图生图任务
   const createEditTask = async (taskConfig) => {
     try {
       const requestBody = {
-        imageUrls: [taskConfig.imageUrl],
+        imageUrls: taskConfig.imageUrls,
         prompt: taskConfig.prompt,
         resolution: taskConfig.resolution,
         aspectRatio: taskConfig.aspectRatio
@@ -478,7 +480,8 @@ function App() {
         resolution: taskConfig.resolution,
         aspectRatio: taskConfig.aspectRatio,
         type: 'image-to-image',
-        imageUrl: taskConfig.imageUrl,
+        imageUrls: taskConfig.imageUrls,
+        imageCount: taskConfig.imageUrls.length,
         createdAt: new Date().toISOString(),
         progress: 0,
         resultUrl: null,
@@ -563,7 +566,7 @@ function App() {
       return;
     }
 
-    if (!editImageFile) {
+    if (editImageFiles.length === 0) {
       showToast('请先选择图片');
       return;
     }
@@ -573,18 +576,23 @@ function App() {
       return;
     }
 
+    if (editImageFiles.length > 10) {
+      showToast('最多支持10张图片');
+      return;
+    }
+
     setIsGeneratingEditImage(true);
     editTaskQueueRef.current = [];
 
     try {
       setIsUploadingEditImage(true);
-      showToast('正在上传图片...');
-      const uploadedUrl = await uploadEditImageToRunningHub(editImageFile);
+      showToast(`正在上传 ${editImageFiles.length} 张图片...`);
+      const uploadedUrls = await uploadEditImagesToRunningHub(editImageFiles);
       setIsUploadingEditImage(false);
 
       for (let i = 0; i < editBatchSize; i++) {
         editTaskQueueRef.current.push({
-          imageUrl: uploadedUrl,
+          imageUrls: uploadedUrls,
           prompt: editPrompt,
           resolution: editResolution,
           aspectRatio: editAspectRatio,
@@ -598,6 +606,7 @@ function App() {
       console.error('图生图失败:', error);
       showToast(`创建任务失败: ${error.message}`);
       setIsGeneratingEditImage(false);
+      setIsUploadingEditImage(false);
     }
   };
 
@@ -627,27 +636,49 @@ function App() {
 
   // 处理图生图图片选择
   const handleEditImageSelect = (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
+    const files = Array.from(e.target.files);
+    if (files.length === 0) return;
 
-    if (file.size > 10 * 1024 * 1024) {
-      showToast('图片大小不能超过 10MB');
+    // 检查总数量
+    if (editImageFiles.length + files.length > 10) {
+      showToast('最多支持10张图片');
       return;
     }
 
-    if (!file.type.startsWith('image/')) {
-      showToast('请选择图片文件');
-      return;
-    }
+    // 检查每张图片
+    const validFiles = files.filter(file => {
+      if (file.size > 10 * 1024 * 1024) {
+        showToast(`${file.name} 超过10MB`);
+        return false;
+      }
+      if (!file.type.startsWith('image/')) {
+        showToast(`${file.name} 不是图片文件`);
+        return false;
+      }
+      return true;
+    });
 
-    setEditImageFile(file);
-    setEditImageUrl(URL.createObjectURL(file));
+    if (validFiles.length === 0) return;
+
+    const newFiles = [...editImageFiles, ...validFiles];
+    const newUrls = newFiles.map(file => URL.createObjectURL(file));
+
+    setEditImageFiles(newFiles);
+    setEditImageUrls(newUrls);
   };
 
-  // 清除图生图图片
-  const handleClearEditImage = () => {
-    setEditImageFile(null);
-    setEditImageUrl(null);
+  // 清除单张图生图图片
+  const handleRemoveEditImage = (index) => {
+    const newFiles = editImageFiles.filter((_, i) => i !== index);
+    const newUrls = editImageUrls.filter((_, i) => i !== index);
+    setEditImageFiles(newFiles);
+    setEditImageUrls(newUrls);
+  };
+
+  // 清除所有图生图图片
+  const handleClearEditImages = () => {
+    setEditImageFiles([]);
+    setEditImageUrls([]);
   };
 
   // 保存图生图提示词
@@ -2258,84 +2289,97 @@ function App() {
             <h2 className="section-title">全能图片PRO - 图生图</h2>
 
             <div className="form-group">
-              <label className="label">上传原图</label>
-              <div style={{ display: 'flex', gap: '1rem', alignItems: 'flex-start' }}>
-                <div
-                  className="image-upload-area"
-                  onClick={() => document.getElementById('editImageInput').click()}
-                  style={{
-                    width: '120px',
-                    height: '120px',
-                    border: '2px dashed var(--border-color)',
-                    borderRadius: '12px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    cursor: 'pointer',
-                    overflow: 'hidden',
-                    background: editImageUrl ? 'transparent' : 'var(--bg-secondary)',
-                    position: 'relative',
-                    flexShrink: 0
-                  }}
-                >
-                  {editImageUrl ? (
-                    <>
-                      <img
-                        src={editImageUrl}
-                        alt="预览"
-                        style={{
-                          width: '100%',
-                          height: '100%',
-                          objectFit: 'cover'
-                        }}
-                      />
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleClearEditImage();
-                        }}
-                        style={{
-                          position: 'absolute',
-                          top: '4px',
-                          right: '4px',
-                          width: '24px',
-                          height: '24px',
-                          borderRadius: '50%',
-                          background: 'rgba(0,0,0,0.6)',
-                          color: 'white',
-                          border: 'none',
-                          cursor: 'pointer',
-                          fontSize: '14px',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center'
-                        }}
-                      >
-                        ×
-                      </button>
-                    </>
-                  ) : (
+              <label className="label">上传原图 ({editImageUrls.length}/10)</label>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem', alignItems: 'flex-start' }}>
+                {editImageUrls.map((url, index) => (
+                  <div
+                    key={index}
+                    style={{
+                      width: '100px',
+                      height: '100px',
+                      border: '2px solid var(--border-color)',
+                      borderRadius: '12px',
+                      overflow: 'hidden',
+                      position: 'relative',
+                      flexShrink: 0
+                    }}
+                  >
+                    <img
+                      src={url}
+                      alt={`图片${index + 1}`}
+                      style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                    />
+                    <button
+                      onClick={() => handleRemoveEditImage(index)}
+                      style={{
+                        position: 'absolute',
+                        top: '4px',
+                        right: '4px',
+                        width: '24px',
+                        height: '24px',
+                        borderRadius: '50%',
+                        background: 'rgba(0,0,0,0.6)',
+                        color: 'white',
+                        border: 'none',
+                        cursor: 'pointer',
+                        fontSize: '14px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center'
+                      }}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+                {editImageUrls.length < 10 && (
+                  <div
+                    className="image-upload-area"
+                    onClick={() => document.getElementById('editImageInput').click()}
+                    style={{
+                      width: '100px',
+                      height: '100px',
+                      border: '2px dashed var(--border-color)',
+                      borderRadius: '12px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      cursor: 'pointer',
+                      background: 'var(--bg-secondary)',
+                      flexShrink: 0
+                    }}
+                  >
                     <div style={{ textAlign: 'center', color: 'var(--text-secondary)' }}>
-                      <div style={{ fontSize: '2rem' }}>+</div>
-                      <div style={{ fontSize: '0.75rem' }}>点击上传</div>
+                      <div style={{ fontSize: '1.5rem' }}>+</div>
+                      <div style={{ fontSize: '0.7rem' }}>添加</div>
                     </div>
-                  )}
-                  <input
-                    id="editImageInput"
-                    type="file"
-                    accept="image/*"
-                    onChange={handleEditImageSelect}
-                    style={{ display: 'none' }}
-                  />
-                </div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div className="hint" style={{ marginBottom: '0.5rem' }}>
-                    支持 JPG、PNG 格式，最大 10MB
                   </div>
-                  <div className="hint" style={{ color: 'var(--text-secondary)' }}>
-                    基于原图生成新图片，支持风格迁移、内容替换等
-                  </div>
+                )}
+                {editImageUrls.length > 0 && (
+                  <button
+                    onClick={handleClearEditImages}
+                    className="btn btn-secondary btn-small"
+                    style={{ height: 'fit-content', marginTop: 'auto' }}
+                  >
+                    清空全部
+                  </button>
+                )}
+                <input
+                  id="editImageInput"
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  onChange={handleEditImageSelect}
+                  style={{ display: 'none' }}
+                />
+              </div>
+              <div style={{ marginTop: '0.5rem', display: 'flex', gap: '1rem' }}>
+                <div className="hint">
+                  支持 JPG、PNG 格式，每张最大 10MB，最多 10 张
                 </div>
+              </div>
+              <div className="hint" style={{ color: 'var(--text-secondary)' }}>
+                基于原图生成新图片，支持风格迁移、内容替换等
               </div>
             </div>
 
@@ -2403,7 +2447,7 @@ function App() {
                 <button
                   className="btn"
                   onClick={handleGenerateEditImage}
-                  disabled={isGeneratingEditImage || isUploadingEditImage || !editImageFile}
+                  disabled={isGeneratingEditImage || isUploadingEditImage || editImageFiles.length === 0}
                   style={{ minWidth: '120px' }}
                 >
                   {isUploadingEditImage ? '上传中...' : isGeneratingEditImage ? '生成中...' : '生成图片'}
