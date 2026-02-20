@@ -28,7 +28,6 @@ function App() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [showVideoModal, setShowVideoModal] = useState(false);
   const [currentVideoUrl, setCurrentVideoUrl] = useState(null);
-  const [showChangelogModal, setShowChangelogModal] = useState(false);
   const pollingRef = useRef(null);
   const taskQueueRef = useRef([]);
 
@@ -497,47 +496,6 @@ function App() {
     setShowVideoModal(true);
   };
 
-  const getChangelog = () => {
-    const changes = [
-      {
-        version: 'v1.2.0',
-        date: '2026-02-20',
-        changes: [
-          '✨ 新增：支持从 GitHub Secrets 读取 API Key',
-          '✨ 新增：添加历史更改信息查看功能',
-          '🐛 修复：视频预览图不显示问题',
-          '🐛 修复：旧视频无法生成预览图问题',
-          '🐛 修复：视频元素语法错误'
-        ]
-      },
-      {
-        version: 'v1.1.0',
-        date: '2026-02-19',
-        changes: [
-          '✨ 新增：批量生产功能（1/3/5/10个）',
-          '✨ 新增：克隆任务功能',
-          '✨ 新增：进度条显示',
-          '✨ 新增：最大并发数配置',
-          '🐛 修复：网络错误自动重试机制'
-        ]
-      },
-      {
-        version: 'v1.0.0',
-        date: '2026-02-18',
-        changes: [
-          '🎉 初始版本发布',
-          '✨ 文生视频功能',
-          '✨ 支持选择时长（10s/15s）',
-          '✨ 支持画面比例（9:16/16:9）',
-          '✨ 历史记录管理',
-          '✨ 视频下载功能',
-          '🔑 API Key 配置'
-        ]
-      }
-    ];
-    return changes;
-  };
-
   const showToast = (message) => {
     const toast = document.createElement('div');
     toast.className = 'toast';
@@ -574,9 +532,6 @@ function App() {
         <div className="header-content">
           <div className="logo">文生视频</div>
           <div className="header-actions">
-            <button className="btn btn-secondary btn-small" onClick={() => setShowChangelogModal(true)}>
-              📝 更新日志
-            </button>
             <button className="btn btn-secondary btn-small" onClick={() => setShowSettingsModal(true)}>
               ⚙️ 设置
             </button>
@@ -672,23 +627,19 @@ function App() {
                       {task.resultUrl ? (
                         <>
                           <video 
-                            src={task.resultUrl}
-                            muted
-                            preload="auto"
-                            style={{ display: task.previewUrl ? 'none' : 'block', opacity: task.previewUrl ? 0 : 1 }}
-                            onLoadedData={(e) => {
-                              const video = e.target;
-                              if (video.readyState >= 2 && !task.previewUrl) {
-                                try {
-                                  video.currentTime = 0.1;
-                                } catch (err) {
-                                  console.error('Seek failed:', err);
-                                }
+                            ref={(videoEl) => {
+                              if (videoEl && !videoEl.dataset.loaded && !task.previewUrl) {
+                                videoEl.dataset.loaded = 'true';
+                                videoEl.currentTime = 0.1;
                               }
                             }}
+                            src={task.resultUrl}
+                            muted
+                            preload="metadata"
+                            style={{ display: task.previewUrl ? 'none' : 'block' }}
                             onSeeked={(e) => {
                               const video = e.target;
-                              if (!task.previewUrl && Math.abs(video.currentTime - 0.1) < 0.2) {
+                              if (!task.previewUrl) {
                                 try {
                                   const canvas = document.createElement('canvas');
                                   canvas.width = video.videoWidth || 720;
@@ -711,7 +662,6 @@ function App() {
                             <img 
                               src={task.previewUrl}
                               alt={task.prompt}
-                              style={{ display: 'block' }}
                             />
                           )}
                           <div style={{
@@ -847,52 +797,6 @@ function App() {
                 </button>
               </div>
             </form>
-          </div>
-        </div>
-      )}
-
-      {showChangelogModal && (
-        <div className="modal" onClick={() => setShowChangelogModal(false)}>
-          <div className="modal-content" onClick={e => e.stopPropagation()} style={{ maxWidth: '600px', maxHeight: '80vh' }}>
-            <h2 className="modal-header">📝 更新日志</h2>
-            <div style={{ overflowY: 'auto', maxHeight: '60vh' }}>
-              {getChangelog().map((item, index) => (
-                <div key={index} style={{ marginBottom: '1.5rem' }}>
-                  <div style={{ 
-                    display: 'flex', 
-                    justifyContent: 'space-between', 
-                    alignItems: 'center',
-                    marginBottom: '0.75rem' 
-                  }}>
-                    <h3 style={{ fontSize: '1.1rem', fontWeight: 600, margin: 0 }}>
-                      {item.version}
-                    </h3>
-                    <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-                      {item.date}
-                    </span>
-                  </div>
-                  <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
-                    {item.changes.map((change, idx) => (
-                      <li key={idx} style={{ 
-                        padding: '0.5rem 0', 
-                        borderBottom: index < getChangelog().length - 1 || idx < item.changes.length - 1 
-                          ? '1px solid var(--border-color)' 
-                          : 'none',
-                        fontSize: '0.9rem',
-                        lineHeight: 1.6
-                      }}>
-                        {change}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              ))}
-            </div>
-            <div className="modal-footer">
-              <button className="btn" onClick={() => setShowChangelogModal(false)}>
-                关闭
-              </button>
-            </div>
           </div>
         </div>
       )}
