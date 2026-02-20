@@ -1,9 +1,18 @@
 import React, { useState, useEffect, useRef } from 'react';
 import ReactDOM from 'react-dom';
+import cloudbase from '@cloudbase/js-sdk';
 import './index.css';
 
 const API_BASE_URL = 'https://www.runninghub.cn/openapi/v2';
 const DEFAULT_API_KEY = import.meta.env.RUNNINGHUB_API_KEY || '';
+const CLOUDBASE_ENV = 'ai-rh202602-4g44noj4b1870204';
+
+// 初始化 CloudBase
+const app = cloudbase.init({
+  env: CLOUDBASE_ENV,
+});
+const db = app.database();
+const auth = app.auth();
 
 function App() {
   const [apiKey, setApiKey] = useState(() => {
@@ -17,27 +26,487 @@ function App() {
     const saved = localStorage.getItem('runninghub_settings');
     return saved ? JSON.parse(saved) : { maxConcurrent: 5 };
   });
+  // 文生视频状态
   const [prompt, setPrompt] = useState('图片动起来');
   const [duration, setDuration] = useState('10');
   const [aspectRatio, setAspectRatio] = useState('9:16');
   const [batchSize, setBatchSize] = useState(1);
-  const [tasks, setTasks] = useState(() => {
-    const saved = localStorage.getItem('runninghub_tasks');
-    return saved ? JSON.parse(saved) : [];
-  });
+  
+  // 图生视频状态
+  const [imagePrompt, setImagePrompt] = useState('图片动起来');
+  const [imageDuration, setImageDuration] = useState('10');
+  const [imageAspectRatio, setImageAspectRatio] = useState('9:16');
+  const [imageBatchSize, setImageBatchSize] = useState(1);
+  const [imageFile, setImageFile] = useState(null);
+  const [imageUrl, setImageUrl] = useState(null);
+  const [isUploading, setIsUploading] = useState(false);
+  const [isGeneratingImageVideo, setIsGeneratingImageVideo] = useState(false);
+  const [showImageSavedPrompts, setShowImageSavedPrompts] = useState(false);
+  
+  const [tasks, setTasks] = useState([]);
+  const [tasksLoaded, setTasksLoaded] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [showVideoModal, setShowVideoModal] = useState(false);
   const [currentVideoUrl, setCurrentVideoUrl] = useState(null);
+  const [showChangelogModal, setShowChangelogModal] = useState(false);
+  const [showSavedPrompts, setShowSavedPrompts] = useState(false);
+  const [savedPrompts, setSavedPrompts] = useState([]);
+  
+  // CloudBase 状态
+  const [cloudUser, setCloudUser] = useState(null);
+  const [isLoadingFromCloud, setIsLoadingFromCloud] = useState(false);
+  const [lastSyncTime, setLastSyncTime] = useState(null);
+  
+  // 导入导出状态
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [importTaskIds, setImportTaskIds] = useState('');
+  const [importPrompt, setImportPrompt] = useState('');
+  const [importing, setImporting] = useState(false);
+  const [importProgress, setImportProgress] = useState({ current: 0, total: 0 });
+  const [exporting, setExporting] = useState(false);
+  
   const pollingRef = useRef(null);
   const taskQueueRef = useRef([]);
 
+  const APP_VERSION = 'v1.6.0';
+  const LAST_DEPLOY_TIME = '2026-02-20 23:00';
+
+  // CloudBase 匿名登录并加载数据
   useEffect(() => {
-    localStorage.setItem('runninghub_tasks', JSON.stringify(tasks));
-  }, [tasks]);
+    const initCloudBase = async () => {
+      try {
+        const loginState = await auth.getLoginState();
+        if (loginState) {
+          const user = await auth.getCurrentUser();
+          setCloudUser(user);
+          console.log('CloudBase 已登录:', user?.uid);
+          // 登录后自动加载云端任务和提示词
+          await loadTasksFromCloud(user);
+          await loadSavedPromptsFromCloud(user);
+        } else {
+          await auth.signInAnonymously();
+          const user = await auth.getCurrentUser();
+          setCloudUser(user);
+          console.log('CloudBase 匿名登录成功:', user?.uid);
+          // 登录后自动加载云端任务和提示词
+          await loadTasksFromCloud(user);
+          await loadSavedPromptsFromCloud(user);
+        }
+      } catch (error) {
+        console.error('CloudBase 登录失败:', error);
+      }
+    };
+    initCloudBase();
+  }, []);
+
+  // 从云端加载任务
+  const loadTasksFromCloud = async (user = cloudUser) => {
+    if (!user) {
+      console.log('CloudBase 用户未登录');
+      return;
+    }
+    
+    setIsLoadingFromCloud(true);
+    try {
+      const result = await db.collection('video_tasks')
+        .where({ _openid: user.uid })
+        .orderBy('createdAt', 'desc')
+        .limit(100)
+        .get();
+      
+      if (result.data && result.data.length > 0) {
+        console.log(`从云端获取到 ${result.data.length} 条记录`);
+        
+        // 直接使用云端数据,并去重(相同 taskId 只保留一个)
+        const taskMap = new Map();
+        const cloudTasks = result.data.map(doc => {
+          const task = {
+            ...doc,
+            _id: undefined, // 移除 CloudBase 的 _id
+          };
+          console.log(`云端任务 ${task.taskId} 的提示词:`, task.prompt);
+          return task;
+        });
+        
+        // 去重:相同 taskId 的任务,保留最新的一个
+        cloudTasks.forEach(task => {
+          if (!taskMap.has(task.taskId)) {
+            taskMap.set(task.taskId, task);
+          }
+        });
+        
+        const uniqueTasks = Array.from(taskMap.values());
+        console.log(`去重后有 ${uniqueTasks.length} 条记录`);
+        
+        setTasks(uniqueTasks);
+        setTasksLoaded(true);
+        setLastSyncTime(new Date().toLocaleString('zh-CN'));
+        
+        if (tasksLoaded) {
+          showToast(`已从云端加载 ${uniqueTasks.length} 条记录`);
+        }
+      } else {
+        console.log('云端暂无数据');
+        setTasks([]);
+        setTasksLoaded(true);
+      }
+    } catch (error) {
+      console.error('加载云端数据失败:', error);
+      setTasksLoaded(true);
+      if (tasksLoaded) {
+        showToast('加载云端数据失败');
+      }
+    } finally {
+      setIsLoadingFromCloud(false);
+    }
+  };
+
+  // 同步任务到云端（已废弃，任务自动保存到云端）
+  const syncTasksToCloud = async () => {
+    showToast('任务已自动保存到云端，无需手动同步');
+  };
+
+  // 保存单个任务到云端
+  const saveTaskToCloud = async (task) => {
+    if (!cloudUser) return;
+    
+    try {
+      const taskData = {
+        ...task,
+        _openid: cloudUser.uid,
+        syncedAt: new Date().toISOString()
+      };
+      
+      console.log(`准备同步任务到云端 ${task.taskId}, 包含字段:`, Object.keys(taskData));
+      console.log(`任务提示词:`, taskData.prompt);
+      
+      const existing = await db.collection('video_tasks')
+        .where({ taskId: task.taskId })
+        .get();
+      
+      if (existing.data && existing.data.length > 0) {
+        await db.collection('video_tasks')
+          .doc(existing.data[0]._id)
+          .update(taskData);
+        console.log(`任务 ${task.taskId} 已更新到云端`);
+      } else {
+        await db.collection('video_tasks').add(taskData);
+        console.log(`任务 ${task.taskId} 已新增到云端`);
+      }
+    } catch (error) {
+      console.error('保存任务到云端失败:', error);
+    }
+  };
+
+  // 删除云端任务
+  const deleteTaskFromCloud = async (taskId) => {
+    if (!cloudUser) return;
+    
+    try {
+      const existing = await db.collection('video_tasks')
+        .where({ taskId: taskId })
+        .get();
+      
+      if (existing.data && existing.data.length > 0) {
+        await db.collection('video_tasks')
+          .doc(existing.data[0]._id)
+          .remove();
+        console.log('任务已从云端删除:', taskId);
+      }
+    } catch (error) {
+      console.error('删除云端任务失败:', error);
+    }
+  };
+
+  // 从云端加载保存的提示词
+  const loadSavedPromptsFromCloud = async (user = cloudUser) => {
+    if (!user) {
+      console.log('CloudBase 用户未登录');
+      return;
+    }
+    
+    try {
+      const result = await db.collection('saved_prompts')
+        .where({ _openid: user.uid })
+        .orderBy('createdAt', 'desc')
+        .limit(100)
+        .get();
+      
+      if (result.data && result.data.length > 0) {
+        console.log(`从云端获取到 ${result.data.length} 条保存的提示词`);
+        
+        const cloudPrompts = result.data.map(doc => ({
+          ...doc,
+          _id: undefined,
+          _openid: undefined
+        }));
+        
+        setSavedPrompts(cloudPrompts);
+        console.log(`已加载 ${cloudPrompts.length} 条保存的提示词`);
+      } else {
+        console.log('云端暂无保存的提示词');
+        setSavedPrompts([]);
+      }
+    } catch (error) {
+      console.error('加载云端提示词失败:', error);
+    }
+  };
+
+  // 保存提示词到云端
+  const savePromptToCloud = async (prompt) => {
+    if (!cloudUser) return;
+    
+    try {
+      const promptData = {
+        ...prompt,
+        _openid: cloudUser.uid,
+        syncedAt: new Date().toISOString()
+      };
+      
+      const existing = await db.collection('saved_prompts')
+        .where({ id: prompt.id })
+        .get();
+      
+      if (existing.data && existing.data.length > 0) {
+        await db.collection('saved_prompts')
+          .doc(existing.data[0]._id)
+          .update(promptData);
+        console.log(`提示词已更新到云端`);
+      } else {
+        await db.collection('saved_prompts').add(promptData);
+        console.log(`提示词已保存到云端`);
+      }
+    } catch (error) {
+      console.error('保存提示词到云端失败:', error);
+    }
+  };
+
+  // 删除云端的提示词
+  const deletePromptFromCloud = async (id) => {
+    if (!cloudUser) return;
+    
+    try {
+      const existing = await db.collection('saved_prompts')
+        .where({ id: id })
+        .get();
+      
+      if (existing.data && existing.data.length > 0) {
+        await db.collection('saved_prompts')
+          .doc(existing.data[0]._id)
+          .remove();
+        console.log('提示词已从云端删除');
+      }
+    } catch (error) {
+      console.error('删除云端提示词失败:', error);
+    }
+  };
+
+  // 通过 taskId 批量导入任务
+  const handleImportTask = async () => {
+    if (!importTaskIds.trim()) {
+      showToast('请输入 Task ID');
+      return;
+    }
+    
+    // 解析多个 Task ID（支持逗号、空格、换行分隔）
+    const taskIdList = importTaskIds
+      .split(/[\s,\n]+/)
+      .map(id => id.trim())
+      .filter(id => id.length > 0);
+    
+    if (taskIdList.length === 0) {
+      showToast('请输入有效的 Task ID');
+      return;
+    }
+    
+    setImporting(true);
+    setImportProgress({ current: 0, total: taskIdList.length });
+    
+    const successTasks = [];
+    const failedTasks = [];
+    const skippedTasks = [];
+    
+    try {
+      // 批量导入任务
+      for (let i = 0; i < taskIdList.length; i++) {
+        const taskId = taskIdList[i];
+        setImportProgress({ current: i + 1, total: taskIdList.length });
+        
+        try {
+          // 检查是否已存在
+          const existing = tasks.find(t => t.taskId === taskId);
+          if (existing) {
+            skippedTasks.push(taskId);
+            continue;
+          }
+          
+          // 查询任务
+          const response = await fetch(`${API_BASE_URL}/query`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${apiKey}`
+            },
+            body: JSON.stringify({ taskId }),
+            signal: AbortSignal.timeout(15000)
+          });
+          
+          if (!response.ok) {
+            throw new Error(`HTTP错误: ${response.status}`);
+          }
+          
+          const data = await response.json();
+          console.log(`导入任务 ${taskId} 数据:`, data);
+          
+          if (data.errorCode && data.errorCode !== '') {
+            throw new Error(`API 错误 (${data.errorCode}): ${data.errorMessage || '未知错误'}`);
+          }
+          
+          if (!data.taskId) {
+            throw new Error('API未返回taskId');
+          }
+          
+          // 尝试从多个可能的字段获取提示词
+          let prompt = data.prompt || data.promptTips || data.description || '';
+          
+          // 如果 API 没有返回提示词,使用用户手动输入的提示词
+          if (!prompt && importPrompt.trim()) {
+            prompt = importPrompt.trim();
+          }
+          
+          const newTask = {
+            taskId: data.taskId,
+            status: data.status,
+            prompt: prompt,
+            duration: data.duration || '10',
+            aspectRatio: data.aspectRatio || '9:16',
+            createdAt: new Date().toISOString(),
+            type: 'video',
+            progress: data.status === 'SUCCESS' ? 100 : 0,
+            resultUrl: null,
+            previewUrl: null,
+            retryCount: 0,
+            syncedAt: new Date().toISOString()
+          };
+          
+          // 如果已生成成功，提取视频URL和预览图
+          if (data.status === 'SUCCESS' && data.results && data.results.length > 0) {
+            newTask.resultUrl = data.results[0].url;
+            newTask.outputType = data.results[0].outputType;
+            newTask.progress = 100;
+            
+            // 提取预览图
+            try {
+              const thumbnail = await extractVideoThumbnail(newTask.resultUrl);
+              newTask.previewUrl = thumbnail;
+            } catch (err) {
+              console.error('提取预览图失败:', err);
+            }
+          }
+          
+          if (data.usage) {
+            newTask.usage = {
+              consumeMoney: data.usage.consumeMoney,
+              consumeCoins: data.usage.consumeCoins,
+              taskCostTime: data.usage.taskCostTime,
+              thirdPartyConsumeMoney: data.usage.thirdPartyConsumeMoney
+            };
+          }
+          
+          successTasks.push(newTask);
+          
+        } catch (error) {
+          console.error(`导入任务 ${taskId} 失败:`, error);
+          failedTasks.push({ taskId, error: error.message });
+        }
+      }
+      
+      // 批量添加到任务列表
+      if (successTasks.length > 0) {
+        setTasks(prev => [...successTasks, ...prev]);
+        
+        // 同步到云端
+        for (const task of successTasks) {
+          await saveTaskToCloud(task);
+        }
+      }
+      
+      // 显示结果
+      let message = `导入完成：成功 ${successTasks.length} 个`;
+      if (skippedTasks.length > 0) message += `，跳过 ${skippedTasks.length} 个`;
+      if (failedTasks.length > 0) message += `，失败 ${failedTasks.length} 个`;
+      
+      showToast(message);
+      setShowImportModal(false);
+      setImportTaskIds('');
+      setImportPrompt('');
+      
+    } catch (error) {
+      console.error('批量导入失败:', error);
+      showToast(`批量导入失败: ${error.message}`);
+    } finally {
+      setImporting(false);
+      setImportProgress({ current: 0, total: 0 });
+    }
+  };
+
+  // 导出任务数据
+  const handleExportTasks = () => {
+    setExporting(true);
+    
+    try {
+      const exportData = {
+        tasks: tasks,
+        exportTime: new Date().toISOString(),
+        version: APP_VERSION
+      };
+      
+      const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `video_tasks_export_${Date.now()}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+      
+      showToast(`已导出 ${tasks.length} 条任务记录`);
+    } catch (error) {
+      console.error('导出失败:', error);
+      showToast('导出失败');
+    } finally {
+      setExporting(false);
+    }
+  };
 
   useEffect(() => {
     localStorage.setItem('runninghub_settings', JSON.stringify(settings));
   }, [settings]);
+
+  useEffect(() => {
+    localStorage.setItem('runninghub_prompts', JSON.stringify(savedPrompts));
+  }, [savedPrompts]);
+
+  // 页面加载时检查所有未完成的任务
+  useEffect(() => {
+    if (!apiKey || !tasksLoaded || tasks.length === 0) return;
+    
+    const pendingTasks = tasks.filter(task => 
+      task.status === 'RUNNING' || 
+      task.status === 'QUEUED' || 
+      task.status === '获取结果中...' ||
+      task.status === '网络中断，正在重试...'
+    );
+    
+    if (pendingTasks.length > 0) {
+      console.log(`发现 ${pendingTasks.length} 个未完成任务，开始重新查询状态`);
+      pendingTasks.forEach(task => {
+        console.log(`重新查询任务: ${task.taskId}`);
+        pollTaskStatus(task.taskId);
+      });
+    }
+  }, [apiKey]); // 只在 apiKey 变化时执行，避免无限循环
 
   const handleApiKeySubmit = (e) => {
     e.preventDefault();
@@ -206,6 +675,7 @@ function App() {
       };
 
       setTasks(prev => [newTask, ...prev]);
+      saveTaskToCloud(newTask); // 同步到云端
       showToast(`任务创建成功！TaskID: ${data.taskId}`);
       pollTaskStatus(newTask.taskId);
 
@@ -270,26 +740,77 @@ function App() {
         const data = await response.json();
         console.log(`任务 ${taskId} 响应数据:`, data);
 
-        setTasks(prev => prev.map(task => {
-          if (task.taskId === taskId) {
-            const updatedTask = { ...task, status: data.status, retryCount: 0 };
-
-            if (data.status === 'SUCCESS') {
-              updatedTask.progress = 99;
-              updatedTask.status = '获取结果中...';
-              fetchTaskResult(taskId);
-            } else if (data.status === 'FAILED') {
-              updatedTask.progress = 0;
+        // 检查是否有错误
+        if (data.errorCode && data.errorCode !== '') {
+          console.error(`任务 ${taskId} API错误:`, data.errorCode, data.errorMessage);
+          setTasks(prev => prev.map(task => {
+            if (task.taskId === taskId) {
+              return {
+                ...task,
+                status: 'FAILED',
+                progress: 0,
+                errorMessage: data.errorMessage || '未知错误'
+              };
             }
+            return task;
+          }));
+          showToast(`任务失败: ${data.errorMessage || data.errorCode}`);
+          return;
+        }
 
-            return updatedTask;
-          }
-          return task;
-        }));
+        setTasks(prev => {
+          const updatedTasks = prev.map(task => {
+            if (task.taskId === taskId) {
+              const updatedTask = { ...task, status: data.status, retryCount: 0 };
 
+              if (data.status === 'SUCCESS' && data.results && data.results.length > 0) {
+                // API 已经返回了视频 URL，直接使用
+                console.log(`任务 ${taskId} 成功，视频URL:`, data.results[0].url);
+                updatedTask.progress = 100;
+                updatedTask.resultUrl = data.results[0].url;
+                updatedTask.previewUrl = null;
+                updatedTask.outputType = data.results[0].outputType;
+                // 保存费用信息
+                if (data.usage) {
+                  updatedTask.usage = {
+                    consumeMoney: data.usage.consumeMoney,
+                    consumeCoins: data.usage.consumeCoins,
+                    taskCostTime: data.usage.taskCostTime,
+                    thirdPartyConsumeMoney: data.usage.thirdPartyConsumeMoney
+                  };
+                }
+              } else if (data.status === 'SUCCESS') {
+                // SUCCESS 但没有 results，需要获取结果
+                console.log(`任务 ${taskId} SUCCESS 但没有 results，尝试获取结果`);
+                updatedTask.progress = 99;
+                updatedTask.status = '获取结果中...';
+                fetchTaskResult(taskId);
+              } else if (data.status === 'FAILED') {
+                console.error(`任务 ${taskId} 失败:`, data.failedReason);
+                updatedTask.progress = 0;
+                updatedTask.failedReason = data.failedReason;
+              }
+
+              console.log(`任务 ${taskId} 更新后的状态:`, updatedTask);
+              // 同步到云端
+              if (data.status === 'SUCCESS' || data.status === 'FAILED') {
+                saveTaskToCloud(updatedTask);
+              }
+              return updatedTask;
+            }
+            return task;
+          });
+          
+          console.log(`所有任务状态更新完成`);
+          return updatedTasks;
+        });
+
+        // 只有在 RUNNING 或 QUEUED 时才继续轮询
         if (data.status === 'RUNNING' || data.status === 'QUEUED') {
           console.log(`任务 ${taskId} 状态为 ${data.status}，5秒后继续轮询`);
           setTimeout(poll, 5000);
+        } else {
+          console.log(`任务 ${taskId} 已完成，状态: ${data.status}，停止轮询`);
         }
 
       } catch (error) {
@@ -363,7 +884,13 @@ function App() {
                   status: 'SUCCESS',
                   progress: 100,
                   resultUrl: videoUrl,
-                  previewUrl: thumbnailUrl
+                  previewUrl: thumbnailUrl,
+                  usage: data.usage ? {
+                    consumeMoney: data.usage.consumeMoney,
+                    consumeCoins: data.usage.consumeCoins,
+                    taskCostTime: data.usage.taskCostTime,
+                    thirdPartyConsumeMoney: data.usage.thirdPartyConsumeMoney
+                  } : null
                 };
               }
               return task;
@@ -485,8 +1012,11 @@ function App() {
     }
   };
 
-  const handleDelete = (taskId) => {
+  const handleDelete = async (taskId) => {
     if (confirm('确定要删除这个任务吗？')) {
+      // 先从云端删除
+      await deleteTaskFromCloud(taskId);
+      // 再从本地列表删除
       setTasks(prev => prev.filter(task => task.taskId !== taskId));
     }
   };
@@ -494,6 +1024,380 @@ function App() {
   const handlePlayVideo = (url) => {
     setCurrentVideoUrl(url);
     setShowVideoModal(true);
+  };
+
+  const handleSavePrompt = async () => {
+    if (!prompt.trim()) {
+      showToast('请先输入提示词');
+      return;
+    }
+    
+    const newPrompt = {
+      id: Date.now(),
+      prompt: prompt.trim(),
+      duration,
+      aspectRatio,
+      createdAt: new Date().toISOString()
+    };
+    
+    // 保存到本地状态
+    setSavedPrompts(prev => [newPrompt, ...prev]);
+    
+    // 保存到云端
+    await savePromptToCloud(newPrompt);
+    
+    showToast('提示词已保存');
+  };
+
+  const handleDeletePrompt = async (id) => {
+    // 从云端删除
+    await deletePromptFromCloud(id);
+    // 从本地列表删除
+    setSavedPrompts(prev => prev.filter(p => p.id !== id));
+    showToast('已删除提示词');
+  };
+
+  // 图片上传处理
+  const handleImageSelect = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    
+    // 检查文件大小 (50MB)
+    if (file.size > 50 * 1024 * 1024) {
+      showToast('图片大小不能超过 50MB');
+      return;
+    }
+    
+    // 检查文件类型
+    if (!file.type.startsWith('image/')) {
+      showToast('请选择图片文件');
+      return;
+    }
+    
+    setImageFile(file);
+    
+    // 创建本地预览
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      setImageUrl(e.target.result);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  // 上传图片到 RunningHub
+  const uploadImageToRunningHub = async (file) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    
+    const response = await fetch(`${API_BASE_URL}/media/upload/binary`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: formData
+    });
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`上传失败: ${errorText}`);
+    }
+    
+    const data = await response.json();
+    if (data.code !== 0) {
+      throw new Error(data.message || '上传失败');
+    }
+    
+    return data.data.download_url;
+  };
+
+  // 图生视频
+  const handleGenerateFromImage = async () => {
+    if (!apiKey) {
+      setShowApiKeyModal(true);
+      return;
+    }
+    
+    if (!imageFile) {
+      showToast('请先选择图片');
+      return;
+    }
+    
+    if (!imagePrompt.trim()) {
+      showToast('请输入提示词');
+      return;
+    }
+    
+    if (imagePrompt.trim().length < 5) {
+      showToast('提示词至少需要 5 个字符');
+      return;
+    }
+    
+    setIsGeneratingImageVideo(true);
+    taskQueueRef.current = [];
+    
+    try {
+      // 1. 上传图片(只上传一次)
+      setIsUploading(true);
+      showToast('正在上传图片...');
+      const uploadedUrl = await uploadImageToRunningHub(imageFile);
+      setIsUploading(false);
+      console.log('图片上传成功:', uploadedUrl);
+      
+      // 2. 创建批量任务
+      for (let i = 0; i < imageBatchSize; i++) {
+        taskQueueRef.current.push({
+          imageUrl: uploadedUrl,
+          prompt: imagePrompt,
+          duration: imageDuration,
+          aspectRatio: imageAspectRatio,
+          delay: i * 1000
+        });
+      }
+      
+      processImageTaskQueue();
+      
+    } catch (error) {
+      console.error('图生视频失败:', error);
+      let errorMsg = error.message;
+      if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
+        errorMsg = '网络连接失败，请检查网络';
+      }
+      showToast(`创建任务失败: ${errorMsg}`);
+      setIsGeneratingImageVideo(false);
+    }
+  };
+  
+  const processImageTaskQueue = () => {
+    let completedTasks = 0;
+    const totalTasks = taskQueueRef.current.length;
+
+    const processNextTask = () => {
+      if (taskQueueRef.current.length === 0) {
+        if (completedTasks === totalTasks) {
+          setIsGeneratingImageVideo(false);
+        }
+        return;
+      }
+
+      const taskConfig = taskQueueRef.current.shift();
+      
+      setTimeout(() => {
+        createImageTask(taskConfig);
+        completedTasks++;
+        processNextTask();
+      }, taskConfig.delay);
+    };
+
+    processNextTask();
+  };
+  
+  const createImageTask = async (taskConfig) => {
+    try {
+      // 创建图生视频任务
+      const requestBody = {
+        imageUrl: taskConfig.imageUrl,
+        duration: taskConfig.duration,
+        aspectRatio: taskConfig.aspectRatio,
+        prompt: taskConfig.prompt,
+        storyboard: false
+      };
+      
+      console.log('请求URL:', `${API_BASE_URL}/rhart-video-s/image-to-video`);
+      console.log('请求体:', requestBody);
+      
+      const response = await fetch(`${API_BASE_URL}/rhart-video-s/image-to-video`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`
+        },
+        body: JSON.stringify(requestBody),
+        signal: AbortSignal.timeout(30000)
+      });
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        let errorMessage = `HTTP错误: ${response.status}`;
+        try {
+          const errorJson = JSON.parse(errorText);
+          errorMessage = errorJson.msg || errorJson.message || errorJson.errorMessage || errorMessage;
+        } catch (e) {
+          if (errorText) {
+            errorMessage = errorText.substring(0, 100);
+          }
+        }
+        throw new Error(errorMessage);
+      }
+      
+      const data = await response.json();
+      console.log('响应数据:', data);
+      
+      if (data.errorCode && data.errorCode !== '') {
+        throw new Error(`API 错误 (${data.errorCode}): ${data.errorMessage || '未知错误'}`);
+      }
+      
+      if (!data.taskId) {
+        throw new Error('API未返回taskId');
+      }
+      
+      const newTask = {
+        taskId: data.taskId,
+        status: data.status || 'RUNNING',
+        prompt: taskConfig.prompt,
+        duration: taskConfig.duration,
+        aspectRatio: taskConfig.aspectRatio,
+        createdAt: new Date().toISOString(),
+        type: 'image-to-video',
+        imageUrl: taskConfig.imageUrl,
+        progress: data.status === 'SUCCESS' ? 100 : 0,
+        resultUrl: null,
+        previewUrl: null,
+        retryCount: 0
+      };
+      
+      setTasks(prev => [newTask, ...prev]);
+      saveTaskToCloud(newTask); // 同步到云端
+      showToast(`任务创建成功！TaskID: ${data.taskId}`);
+      pollTaskStatus(newTask.taskId);
+      
+    } catch (error) {
+      console.error('创建图生视频任务失败:', error);
+      showToast(`任务创建失败: ${error.message}`);
+      
+      if (taskQueueRef.current.length === 0) {
+        setIsGeneratingImageVideo(false);
+      }
+    }
+  };
+
+  // 保存图生视频提示词
+  const handleSaveImagePrompt = async () => {
+    if (!imagePrompt.trim()) {
+      showToast('请先输入提示词');
+      return;
+    }
+    
+    const newPrompt = {
+      id: Date.now(),
+      prompt: imagePrompt.trim(),
+      type: 'image-to-video',
+      duration: imageDuration,
+      aspectRatio: imageAspectRatio,
+      createdAt: new Date().toISOString()
+    };
+    
+    // 保存到本地状态
+    setSavedPrompts(prev => [newPrompt, ...prev]);
+    
+    // 保存到云端
+    await savePromptToCloud(newPrompt);
+    
+    showToast('提示词已保存');
+  };
+
+  // 使用保存的提示词(支持文生视频和图生视频)
+  const handleUsePrompt = (savedPrompt) => {
+    if (savedPrompt.type === 'image-to-video') {
+      // 图生视频提示词
+      setImagePrompt(savedPrompt.prompt);
+      setImageDuration(savedPrompt.duration);
+      setImageAspectRatio(savedPrompt.aspectRatio);
+      showToast('已应用保存的图生视频提示词');
+    } else {
+      // 文生视频提示词(默认)
+      setPrompt(savedPrompt.prompt);
+      setDuration(savedPrompt.duration);
+      setAspectRatio(savedPrompt.aspectRatio);
+      showToast('已应用保存的提示词');
+    }
+  };
+
+  // 清除图片
+  const handleClearImage = () => {
+    setImageFile(null);
+    setImageUrl(null);
+  };
+
+  const getChangelog = () => {
+    const changes = [
+      {
+        version: 'v1.6.0',
+        date: '2026-02-20',
+        changes: [
+          '📥 新增：手动导入任务功能',
+          '📤 新增：导出所有任务数据',
+          '🖼️ 优化：历史记录视频预览图显示',
+          '📊 优化：导入任务自动提取预览图'
+        ]
+      },
+      {
+        version: 'v1.5.0',
+        date: '2026-02-20',
+        changes: [
+          '☁️ 新增：CloudBase 云同步功能',
+          '☁️ 支持历史记录云端备份',
+          '☁️ 支持多设备数据同步',
+          '🔐 自动匿名登录认证'
+        ]
+      },
+      {
+        version: 'v1.4.0',
+        date: '2026-02-20',
+        changes: [
+          '✨ 新增：任务费用显示',
+          '✨ 新增：当日消耗统计',
+          '📊 显示今日生成数量、金额和RH币'
+        ]
+      },
+      {
+        version: 'v1.3.0',
+        date: '2026-02-20',
+        changes: [
+          '✨ 新增：图生视频功能',
+          '✨ 新增：图片上传支持',
+          '✨ 新增：历史记录悬停预览播放',
+          '🎨 优化：任务卡片显示区分类型'
+        ]
+      },
+      {
+        version: 'v1.2.0',
+        date: '2026-02-20',
+        changes: [
+          '✨ 新增：提示词保存和管理功能',
+          '✨ 新增：版本号和更新历史查看',
+          '✨ 新增：显示最后部署时间',
+          '🐛 修复：任务状态同步问题',
+          '🐛 修复：页面刷新后状态丢失',
+          '🐛 修复：CSS 路径问题',
+          '🐛 修复：视频预览图显示问题'
+        ]
+      },
+      {
+        version: 'v1.1.0',
+        date: '2026-02-19',
+        changes: [
+          '✨ 新增：批量生产功能（1/3/5/10个）',
+          '✨ 新增：克隆任务功能',
+          '✨ 新增：进度条显示',
+          '✨ 新增：最大并发数配置',
+          '🐛 修复：网络错误自动重试机制'
+        ]
+      },
+      {
+        version: 'v1.0.0',
+        date: '2026-02-18',
+        changes: [
+          '🎉 初始版本发布',
+          '✨ 文生视频功能',
+          '✨ 支持选择时长（10s/15s）',
+          '✨ 支持画面比例（9:16/16:9）',
+          '✨ 历史记录管理',
+          '✨ 视频下载功能',
+          '🔑 API Key 配置'
+        ]
+      }
+    ];
+    return changes;
   };
 
   const showToast = (message) => {
@@ -526,12 +1430,65 @@ function App() {
     return 'running';
   };
 
+  // 计算当日消耗
+  const getTodayUsage = () => {
+    const today = new Date().toDateString();
+    const todayTasks = tasks.filter(task => {
+      const taskDate = new Date(task.createdAt).toDateString();
+      return taskDate === today && task.status === 'SUCCESS';
+    });
+    
+    let totalMoney = 0;
+    let totalCoins = 0;
+    
+    todayTasks.forEach(task => {
+      if (task.usage) {
+        if (task.usage.consumeMoney) {
+          totalMoney += parseFloat(task.usage.consumeMoney) || 0;
+        }
+        if (task.usage.consumeCoins) {
+          totalCoins += parseFloat(task.usage.consumeCoins) || 0;
+        }
+        if (task.usage.thirdPartyConsumeMoney) {
+          totalMoney += parseFloat(task.usage.thirdPartyConsumeMoney) || 0;
+        }
+      }
+    });
+    
+    return {
+      taskCount: todayTasks.length,
+      totalMoney: totalMoney.toFixed(2),
+      totalCoins: totalCoins.toFixed(2)
+    };
+  };
+
+  // 格式化费用显示
+  const formatCost = (usage) => {
+    if (!usage) return null;
+    
+    const parts = [];
+    if (usage.consumeMoney) {
+      parts.push(`¥${parseFloat(usage.consumeMoney).toFixed(2)}`);
+    }
+    if (usage.thirdPartyConsumeMoney) {
+      parts.push(`三方¥${parseFloat(usage.thirdPartyConsumeMoney).toFixed(2)}`);
+    }
+    if (usage.consumeCoins) {
+      parts.push(`${usage.consumeCoins} RH币`);
+    }
+    
+    return parts.length > 0 ? parts.join(' · ') : null;
+  };
+
   return (
     <div className="app">
       <header className="header">
         <div className="header-content">
-          <div className="logo">文生视频</div>
+          <div className="logo">AI视频生成 <span style={{ fontSize: '0.7rem', opacity: 0.6, marginLeft: '0.5rem' }}>{APP_VERSION}</span></div>
           <div className="header-actions">
+            <button className="btn btn-secondary btn-small" onClick={() => setShowChangelogModal(true)}>
+              📝 更新日志
+            </button>
             <button className="btn btn-secondary btn-small" onClick={() => setShowSettingsModal(true)}>
               ⚙️ 设置
             </button>
@@ -544,8 +1501,59 @@ function App() {
 
       <main className="main">
         <div className="container">
-          <section className="card" style={{ marginBottom: '2rem' }}>
-            <h2 className="section-title">生成视频</h2>
+          {/* 当日统计 */}
+          <div className="stats-bar">
+            <div className="stats-item">
+              <span className="stats-label">今日生成</span>
+              <span className="stats-value">{getTodayUsage().taskCount} 个视频</span>
+            </div>
+            <div className="stats-item">
+              <span className="stats-label">今日消耗</span>
+              <span className="stats-value">¥{getTodayUsage().totalMoney}</span>
+            </div>
+            <div className="stats-item">
+              <span className="stats-label">今日RH币</span>
+              <span className="stats-value">{getTodayUsage().totalCoins}</span>
+            </div>
+            <div className="stats-item" style={{ marginLeft: 'auto' }}>
+              <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                <button 
+                  className="btn btn-secondary btn-small"
+                  onClick={() => setShowImportModal(true)}
+                  title="通过Task ID导入任务"
+                >
+                  📥 导入
+                </button>
+                <button 
+                  className="btn btn-secondary btn-small"
+                  onClick={handleExportTasks}
+                  disabled={exporting || tasks.length === 0}
+                  title="导出所有任务"
+                >
+                  {exporting ? '⏳' : '📤'} 导出
+                </button>
+                <button 
+                  className="btn btn-secondary btn-small"
+                  onClick={() => loadTasksFromCloud()}
+                  disabled={isLoadingFromCloud || !cloudUser}
+                  title="刷新云端数据"
+                >
+                  {isLoadingFromCloud ? '⏳' : '🔄'} 刷新
+                </button>
+              </div>
+              {lastSyncTime && (
+                <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', marginTop: '0.25rem' }}>
+                  更新: {lastSyncTime}
+                </span>
+              )}
+            </div>
+          </div>
+          
+          <div style={{ display: 'flex', gap: '2rem', alignItems: 'flex-start' }}>
+            {/* 左侧：生成视频模块 */}
+            <div style={{ flex: '0 0 400px', minWidth: '400px' }}>
+              <section className="card" style={{ marginBottom: '2rem' }}>
+                <h2 className="section-title">生成视频</h2>
             <div className="form-group">
               <label className="label">提示词</label>
               <textarea
@@ -607,11 +1615,265 @@ function App() {
                 </button>
               </div>
             </div>
+            
+            <div style={{ marginTop: '0.5rem', display: 'flex', gap: '0.5rem' }}>
+              <button 
+                className="btn btn-secondary btn-small"
+                onClick={handleSavePrompt}
+                style={{ flex: 1 }}
+              >
+                💾 保存提示词
+              </button>
+              {savedPrompts.length > 0 && (
+                <button 
+                  className="btn btn-secondary btn-small"
+                  onClick={() => setShowSavedPrompts(!showSavedPrompts)}
+                >
+                  {showSavedPrompts ? '📂 隐藏' : `📋 已保存 (${savedPrompts.length})`}
+                </button>
+              )}
+            </div>
           </section>
 
+          {showSavedPrompts && savedPrompts.length > 0 && (
+            <section className="card" style={{ marginBottom: '2rem', marginTop: '1rem' }}>
+              <h2 className="section-title">保存的提示词 ({savedPrompts.length})</h2>
+              <div style={{ display: 'grid', gap: '0.75rem' }}>
+                {savedPrompts.map(item => (
+                  <div 
+                    key={item.id}
+                    style={{
+                      padding: '1rem',
+                      background: 'var(--bg-secondary)',
+                      borderRadius: '12px',
+                      border: '1px solid var(--border-color)'
+                    }}
+                  >
+                    <div style={{ 
+                      fontSize: '0.9rem', 
+                      marginBottom: '0.5rem',
+                      lineHeight: '1.4'
+                    }}>
+                      {item.prompt}
+                    </div>
+                    <div style={{ 
+                      fontSize: '0.8rem', 
+                      color: 'var(--text-secondary)',
+                      marginBottom: '0.75rem'
+                    }}>
+                      <span style={{ 
+                        background: item.type === 'image-to-video' ? '#10b981' : '#6366f1',
+                        color: 'white',
+                        padding: '2px 6px',
+                        borderRadius: '4px',
+                        fontSize: '0.7rem',
+                        marginRight: '0.5rem'
+                      }}>
+                        {item.type === 'image-to-video' ? '图生' : '文生'}
+                      </span>
+                      {item.duration}秒 · {item.aspectRatio} · {formatDate(item.createdAt)}
+                    </div>
+                    <div style={{ display: 'flex', gap: '0.5rem' }}>
+                      <button 
+                        className="btn btn-small"
+                        onClick={() => {
+                          handleUsePrompt(item);
+                          setShowSavedPrompts(false);
+                        }}
+                        style={{ flex: 1 }}
+                      >
+                        使用
+                      </button>
+                      <button 
+                        className="btn btn-secondary btn-small btn-icon"
+                        onClick={() => handleDeletePrompt(item.id)}
+                        title="删除"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {/* 图生视频模块 */}
+          <section className="card" style={{ marginBottom: '2rem', marginTop: '1rem' }}>
+            <h2 className="section-title">图生视频</h2>
+            
+            <div className="form-group">
+              <label className="label">上传图片</label>
+              <div style={{ display: 'flex', gap: '1rem', alignItems: 'flex-start' }}>
+                <div 
+                  className="image-upload-area"
+                  onClick={() => document.getElementById('imageInput').click()}
+                  style={{
+                    width: '120px',
+                    height: '160px',
+                    border: '2px dashed var(--border-color)',
+                    borderRadius: '12px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    cursor: 'pointer',
+                    overflow: 'hidden',
+                    background: imageUrl ? 'transparent' : 'var(--bg-secondary)',
+                    position: 'relative',
+                    flexShrink: 0
+                  }}
+                >
+                  {imageUrl ? (
+                    <>
+                      <img 
+                        src={imageUrl} 
+                        alt="预览" 
+                        style={{ 
+                          width: '100%', 
+                          height: '100%', 
+                          objectFit: 'cover' 
+                        }} 
+                      />
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleClearImage();
+                        }}
+                        style={{
+                          position: 'absolute',
+                          top: '4px',
+                          right: '4px',
+                          width: '24px',
+                          height: '24px',
+                          borderRadius: '50%',
+                          background: 'rgba(0,0,0,0.6)',
+                          color: 'white',
+                          border: 'none',
+                          cursor: 'pointer',
+                          fontSize: '14px',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center'
+                        }}
+                      >
+                        ×
+                      </button>
+                    </>
+                  ) : (
+                    <div style={{ textAlign: 'center', color: 'var(--text-secondary)' }}>
+                      <div style={{ fontSize: '2rem' }}>+</div>
+                      <div style={{ fontSize: '0.75rem' }}>点击上传</div>
+                    </div>
+                  )}
+                  <input 
+                    id="imageInput"
+                    type="file" 
+                    accept="image/*" 
+                    onChange={handleImageSelect}
+                    style={{ display: 'none' }}
+                  />
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div className="hint" style={{ marginBottom: '0.5rem' }}>
+                    支持 JPG、PNG 格式，最大 50MB
+                  </div>
+                  <div className="hint" style={{ color: 'var(--text-secondary)' }}>
+                    推荐使用 9:16 比例的图片以获得最佳效果
+                  </div>
+                </div>
+              </div>
+            </div>
+            
+            <div className="form-group">
+              <label className="label">提示词</label>
+              <textarea
+                className="input textarea"
+                value={imagePrompt}
+                onChange={(e) => setImagePrompt(e.target.value)}
+                placeholder="描述你想要的视频效果..."
+                maxLength="4000"
+                style={{ minHeight: '80px' }}
+              />
+            </div>
+            
+            <div className="form-row">
+              <div className="form-group">
+                <label className="label">时长</label>
+                <select 
+                  className="input select"
+                  value={imageDuration}
+                  onChange={(e) => setImageDuration(e.target.value)}
+                >
+                  <option value="10">10秒</option>
+                  <option value="15">15秒</option>
+                </select>
+              </div>
+              
+              <div className="form-group">
+                <label className="label">画面比例</label>
+                <select 
+                  className="input select"
+                  value={imageAspectRatio}
+                  onChange={(e) => setImageAspectRatio(e.target.value)}
+                >
+                  <option value="9:16">竖屏 (9:16)</option>
+                  <option value="16:9">横屏 (16:9)</option>
+                </select>
+              </div>
+
+              <div className="form-group">
+                <label className="label">批量生产</label>
+                <select 
+                  className="input select"
+                  value={imageBatchSize}
+                  onChange={(e) => setImageBatchSize(Number(e.target.value))}
+                >
+                  <option value="1">1个</option>
+                  <option value="3">3个</option>
+                  <option value="5">5个</option>
+                  <option value="10">10个</option>
+                </select>
+              </div>
+
+              <div className="form-group" style={{ flex: '0 0 auto' }}>
+                <button 
+                  className="btn"
+                  onClick={handleGenerateFromImage}
+                  disabled={isGeneratingImageVideo || isUploading || !imageFile}
+                  style={{ minWidth: '120px' }}
+                >
+                  {isUploading ? '上传中...' : isGeneratingImageVideo ? '生成中...' : '生成视频'}
+                </button>
+              </div>
+            </div>
+            
+            <div style={{ marginTop: '0.5rem', display: 'flex', gap: '0.5rem' }}>
+              <button 
+                className="btn btn-secondary btn-small"
+                onClick={handleSaveImagePrompt}
+                style={{ flex: 1 }}
+              >
+                💾 保存提示词
+              </button>
+            </div>
+          </section>
+            </div>
+
+            {/* 右侧：历史记录 */}
+            <div style={{ flex: '1', minWidth: '0' }}>
           <section>
             <h2 className="section-title">历史记录 ({tasks.length})</h2>
-            {tasks.length === 0 ? (
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+              <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                {isLoadingFromCloud ? '正在从云端加载...' : '任务数据保存在云端数据库'}
+              </div>
+            </div>
+            {isLoadingFromCloud ? (
+              <div className="card" style={{ textAlign: 'center', padding: '3rem' }}>
+                <p style={{ color: 'var(--text-secondary)' }}>正在从云端加载任务...</p>
+                <div className="spinner" style={{ margin: '1rem auto 0' }} />
+              </div>
+            ) : tasks.length === 0 ? (
               <div className="card" style={{ textAlign: 'center', padding: '3rem' }}>
                 <p style={{ color: 'var(--text-secondary)' }}>暂无生成的视频</p>
               </div>
@@ -623,6 +1885,29 @@ function App() {
                       className="task-preview"
                       onClick={task.resultUrl ? () => handlePlayVideo(task.resultUrl) : undefined}
                       style={task.resultUrl ? { cursor: 'pointer' } : {}}
+                      onMouseEnter={(e) => {
+                        if (!task.resultUrl) return;
+                        const video = e.currentTarget.querySelector('video');
+                        const img = e.currentTarget.querySelector('img');
+                        if (video) {
+                          video.style.display = 'block';
+                          if (img) img.style.display = 'none';
+                          video.play().catch(() => {});
+                        }
+                      }}
+                      onMouseLeave={(e) => {
+                        if (!task.resultUrl) return;
+                        const video = e.currentTarget.querySelector('video');
+                        const img = e.currentTarget.querySelector('img');
+                        if (video) {
+                          video.pause();
+                          video.currentTime = 0.1;
+                          if (task.previewUrl && img) {
+                            video.style.display = 'none';
+                            img.style.display = 'block';
+                          }
+                        }
+                      }}
                     >
                       {task.resultUrl ? (
                         <>
@@ -636,6 +1921,7 @@ function App() {
                             src={task.resultUrl}
                             muted
                             preload="metadata"
+                            loop
                             style={{ display: task.previewUrl ? 'none' : 'block' }}
                             onSeeked={(e) => {
                               const video = e.target;
@@ -664,21 +1950,7 @@ function App() {
                               alt={task.prompt}
                             />
                           )}
-                          <div style={{
-                            position: 'absolute',
-                            top: '50%',
-                            left: '50%',
-                            transform: 'translate(-50%, -50%)',
-                            background: 'rgba(0,0,0,0.6)',
-                            borderRadius: '50%',
-                            width: '50px',
-                            height: '50px',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            color: 'white',
-                            fontSize: '1.5rem'
-                          }}>
+                          <div className="play-overlay">
                             ▶
                           </div>
                         </>
@@ -698,7 +1970,9 @@ function App() {
                     </div>
                     
                     <div className="task-info">
-                      <span className="task-badge video">文生视频</span>
+                      <span className={`task-badge ${task.type === 'image-to-video' ? 'image-video' : 'video'}`}>
+                        {task.type === 'image-to-video' ? '图生视频' : '文生视频'}
+                      </span>
                       <div className="task-id">TaskID: {task.taskId}</div>
                       <div className="task-prompt" title={task.prompt}>{task.prompt}</div>
                       <div className="task-meta">
@@ -709,6 +1983,12 @@ function App() {
                           🕐 {formatDate(task.createdAt)}
                         </span>
                       </div>
+                      
+                      {task.usage && formatCost(task.usage) && (
+                        <div className="task-cost">
+                          💰 {formatCost(task.usage)}
+                        </div>
+                      )}
                       
                       {task.progress > 0 && task.progress < 100 && (
                         <div style={{ marginTop: '0.75rem' }}>
@@ -761,6 +2041,8 @@ function App() {
               </div>
             )}
           </section>
+            </div>
+          </div>
         </div>
       </main>
 
@@ -836,6 +2118,127 @@ function App() {
             <div className="modal-footer">
               <button className="btn" onClick={() => setShowSettingsModal(false)}>
                 关闭
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showChangelogModal && (
+        <div className="modal" onClick={() => setShowChangelogModal(false)}>
+          <div className="modal-content" onClick={e => e.stopPropagation()}>
+            <h2 className="modal-header">更新日志</h2>
+            
+            <div style={{ marginBottom: '1rem', padding: '1rem', background: 'var(--bg-secondary)', borderRadius: '12px' }}>
+              <div style={{ fontSize: '0.9rem', color: 'var(--text-secondary)' }}>
+                <strong>当前版本：</strong>{APP_VERSION}
+              </div>
+              <div style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', marginTop: '0.5rem' }}>
+                <strong>最后部署：</strong>{LAST_DEPLOY_TIME}
+              </div>
+            </div>
+
+            {getChangelog().map((item, index) => (
+              <div key={index} style={{ marginBottom: index < getChangelog().length - 1 ? '1.5rem' : 0 }}>
+                <div style={{ 
+                  display: 'flex', 
+                  justifyContent: 'space-between', 
+                  alignItems: 'center',
+                  marginBottom: '0.75rem'
+                }}>
+                  <h3 style={{ fontSize: '1.1rem', fontWeight: 600 }}>{item.version}</h3>
+                  <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>{item.date}</span>
+                </div>
+                <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+                  {item.changes.map((change, i) => (
+                    <li key={i} style={{
+                      padding: '0.5rem 0',
+                      borderBottom: i < item.changes.length - 1 ? '1px solid var(--border-color)' : 'none',
+                      fontSize: '0.9rem',
+                      lineHeight: 1.6
+                    }}>
+                      {change}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+
+            <div className="modal-footer">
+              <button className="btn" onClick={() => setShowChangelogModal(false)}>
+                关闭
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showImportModal && (
+        <div className="modal" onClick={() => setShowImportModal(false)}>
+          <div className="modal-content" onClick={e => e.stopPropagation()}>
+            <h2 className="modal-header">导入任务</h2>
+            
+            <div className="form-group">
+              <label className="label">Task IDs</label>
+              <textarea
+                className="input textarea"
+                value={importTaskIds}
+                onChange={(e) => setImportTaskIds(e.target.value)}
+                placeholder="请输入要导入的 Task ID，每行一个"
+                autoFocus
+                style={{ fontFamily: 'monospace', minHeight: '120px' }}
+              />
+              <div className="hint" style={{ marginTop: '0.5rem' }}>
+                支持批量导入，每行输入一个 Task ID，系统将查询并导入所有任务
+              </div>
+            </div>
+            
+            <div className="form-group" style={{ marginTop: '1rem' }}>
+              <label className="label">提示词（可选）</label>
+              <textarea
+                className="input textarea"
+                value={importPrompt}
+                onChange={(e) => setImportPrompt(e.target.value)}
+                placeholder="如果 API 没有返回提示词，可以手动输入，将应用到所有导入的任务"
+                maxLength="4000"
+                style={{ minHeight: '60px' }}
+              />
+              <div className="hint" style={{ marginTop: '0.5rem' }}>
+                如果 API 没有返回原始提示词，可以在这里手动输入，此提示词将应用到所有导入的任务
+              </div>
+            </div>
+              
+            {importing && importProgress.total > 0 && (
+              <div style={{ marginTop: '1rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem', fontSize: '0.85rem' }}>
+                  <span>导入进度</span>
+                  <span>{importProgress.current} / {importProgress.total}</span>
+                </div>
+                <div className="progress-bar">
+                  <div 
+                    className="progress-fill"
+                    style={{ 
+                      width: `${Math.round((importProgress.current / importProgress.total) * 100)}%`,
+                      transition: 'width 0.3s ease'
+                    }}
+                  />
+                </div>
+              </div>
+            )}
+            
+            <div className="modal-footer">
+              <button 
+                className="btn btn-secondary" 
+                onClick={() => setShowImportModal(false)}
+              >
+                取消
+              </button>
+              <button 
+                className="btn" 
+                onClick={handleImportTask}
+                disabled={importing || !importTaskIds.trim()}
+              >
+                {importing ? '导入中...' : '导入'}
               </button>
             </div>
           </div>
