@@ -627,19 +627,23 @@ function App() {
                       {task.resultUrl ? (
                         <>
                           <video 
-                            ref={(videoEl) => {
-                              if (videoEl && !videoEl.dataset.loaded && !task.previewUrl) {
-                                videoEl.dataset.loaded = 'true';
-                                videoEl.currentTime = 0.1;
-                              }
-                            }}
                             src={task.resultUrl}
                             muted
                             preload="metadata"
-                            style={{ display: task.previewUrl ? 'none' : 'block' }}
+                            style={{ display: task.previewUrl ? 'none' : 'block', opacity: task.previewUrl ? 0 : 1 }}
+                            onLoadedData={(e) => {
+                              const video = e.target;
+                              if (video.readyState >= 2 && !task.previewUrl) {
+                                try {
+                                  video.currentTime = 0.1;
+                                } catch (err) {
+                                  console.error('Seek failed:', err);
+                                }
+                              }
+                            }}
                             onSeeked={(e) => {
                               const video = e.target;
-                              if (!task.previewUrl) {
+                              if (!task.previewUrl && video.currentTime === 0.1) {
                                 try {
                                   const canvas = document.createElement('canvas');
                                   canvas.width = video.videoWidth || 720;
@@ -662,6 +666,7 @@ function App() {
                             <img 
                               src={task.previewUrl}
                               alt={task.prompt}
+                              style={{ display: 'block' }}
                             />
                           )}
                           <div style={{
