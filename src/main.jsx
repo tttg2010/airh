@@ -3,9 +3,14 @@ import ReactDOM from 'react-dom';
 import './index.css';
 
 const API_BASE_URL = 'https://www.runninghub.cn/openapi/v2';
+const DEFAULT_API_KEY = import.meta.env.RUNNINGHUB_API_KEY || '';
 
 function App() {
-  const [apiKey, setApiKey] = useState(() => localStorage.getItem('runninghub_api_key') || '');
+  const [apiKey, setApiKey] = useState(() => {
+    const stored = localStorage.getItem('runninghub_api_key');
+    if (stored) return stored;
+    return DEFAULT_API_KEY;
+  });
   const [showApiKeyModal, setShowApiKeyModal] = useState(!apiKey);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [settings, setSettings] = useState(() => {
