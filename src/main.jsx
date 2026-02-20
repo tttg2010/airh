@@ -85,6 +85,19 @@ function App() {
   });
 
   // 应用主题
+  // 左侧主Tab状态（视频生成/图片生成）
+  const [leftMainTab, setLeftMainTab] = useState('video');
+
+  // 视频生成Tab下的功能选择
+  const [videoFunction, setVideoFunction] = useState('text-to-video'); // text-to-video | image-to-video
+
+  // 图片生成Tab下的功能选择
+  const [imageFunction, setImageFunction] = useState('image-to-image'); // image-to-image
+
+  // 右侧历史记录Tab状态
+  const [rightTab, setRightTab] = useState('all'); // all | video | image
+
+  // 其他状态...
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
     localStorage.setItem('app_theme', theme);
@@ -1951,7 +1964,7 @@ function App() {
           <div className="stats-bar">
             <div className="stats-item">
               <span className="stats-label">今日生成</span>
-              <span className="stats-value">{getTodayUsage().taskCount} 个视频</span>
+              <span className="stats-value">{getTodayUsage().taskCount} 个</span>
             </div>
             <div className="stats-item">
               <span className="stats-label">今日消耗</span>
@@ -1963,14 +1976,14 @@ function App() {
             </div>
             <div className="stats-item" style={{ marginLeft: 'auto' }}>
               <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                <button 
+                <button
                   className="btn btn-secondary btn-small"
                   onClick={() => setShowImportModal(true)}
                   title="通过Task ID导入任务"
                 >
                   📥 导入
                 </button>
-                <button 
+                <button
                   className="btn btn-secondary btn-small"
                   onClick={handleExportTasks}
                   disabled={exporting || tasks.length === 0}
@@ -1978,7 +1991,7 @@ function App() {
                 >
                   {exporting ? '⏳' : '📤'} 导出
                 </button>
-                <button 
+                <button
                   className="btn btn-secondary btn-small"
                   onClick={() => loadTasksFromCloud()}
                   disabled={isLoadingFromCloud || !cloudUser}
@@ -1994,752 +2007,1097 @@ function App() {
               )}
             </div>
           </div>
-          
-          <div style={{ display: 'flex', gap: '2rem', alignItems: 'flex-start' }}>
-            {/* 左侧：生成视频模块 */}
-            <div style={{ flex: '0 0 400px', minWidth: '400px' }}>
-              <section className="card" style={{ marginBottom: '2rem' }}>
-                <h2 className="section-title">生成视频</h2>
-            <div className="form-group">
-              <label className="label">提示词</label>
-              <textarea
-                className="input textarea"
-                value={prompt}
-                onChange={(e) => setPrompt(e.target.value)}
-                placeholder="描述你想要生成的视频内容..."
-                maxLength="4000"
-              />
-            </div>
-            
-            <div className="form-row">
-              <div className="form-group">
-                <label className="label">时长</label>
-                <select 
-                  className="input select"
-                  value={duration}
-                  onChange={(e) => setDuration(e.target.value)}
-                >
-                  <option value="10">10秒</option>
-                  <option value="15">15秒</option>
-                </select>
-              </div>
-              
-              <div className="form-group">
-                <label className="label">画面比例</label>
-                <select 
-                  className="input select"
-                  value={aspectRatio}
-                  onChange={(e) => setAspectRatio(e.target.value)}
-                >
-                  <option value="9:16">竖屏 (9:16)</option>
-                  <option value="16:9">横屏 (16:9)</option>
-                </select>
-              </div>
 
-              <div className="form-group">
-                <label className="label">批量生产</label>
-                <select 
-                  className="input select"
-                  value={batchSize}
-                  onChange={(e) => setBatchSize(Number(e.target.value))}
-                >
-                  <option value="1">1个</option>
-                  <option value="3">3个</option>
-                  <option value="5">5个</option>
-                  <option value="10">10个</option>
-                </select>
-              </div>
-
-              <div className="form-group" style={{ flex: '0 0 auto' }}>
-                <button 
-                  className="btn"
-                  onClick={handleGenerate}
-                  disabled={isGenerating}
-                  style={{ minWidth: '120px' }}
-                >
-                  {isGenerating ? '生成中...' : '生成视频'}
-                </button>
-              </div>
-            </div>
-            
-            <div style={{ marginTop: '0.5rem', display: 'flex', gap: '0.5rem' }}>
-              <button 
-                className="btn btn-secondary btn-small"
-                onClick={handleSavePrompt}
-                style={{ flex: 1 }}
-              >
-                💾 保存提示词
-              </button>
-              {savedPrompts.length > 0 && (
-                <button 
-                  className="btn btn-secondary btn-small"
-                  onClick={() => setShowSavedPrompts(!showSavedPrompts)}
-                >
-                  {showSavedPrompts ? '📂 隐藏' : `📋 已保存 (${savedPrompts.length})`}
-                </button>
-              )}
-            </div>
-          </section>
-
-          {showSavedPrompts && savedPrompts.length > 0 && (
-            <section className="card" style={{ marginBottom: '2rem', marginTop: '1rem' }}>
-              <h2 className="section-title">保存的提示词 ({savedPrompts.length})</h2>
-              <div style={{ display: 'grid', gap: '0.75rem' }}>
-                {savedPrompts.map(item => (
-                  <div 
-                    key={item.id}
-                    style={{
-                      padding: '1rem',
-                      background: 'var(--bg-secondary)',
-                      borderRadius: '12px',
-                      border: '1px solid var(--border-color)'
-                    }}
+          <div style={{ display: 'flex', gap: '2rem', alignItems: 'flex-start', minHeight: 'calc(100vh - 200px)' }}>
+            {/* 左侧：生成面板 */}
+            <div style={{ flex: '0 0 420px', minWidth: '420px' }}>
+              <div className="card" style={{ marginBottom: '2rem', height: 'fit-content' }}>
+                {/* 主Tab切换 */}
+                <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1.5rem', borderBottom: '2px solid var(--border-color)', paddingBottom: '0.75rem' }}>
+                  <button
+                    className={`tab-button ${leftMainTab === 'video' ? 'active' : ''}`}
+                    onClick={() => setLeftMainTab('video')}
                   >
-                    <div style={{ 
-                      fontSize: '0.9rem', 
-                      marginBottom: '0.5rem',
-                      lineHeight: '1.4'
-                    }}>
-                      {item.prompt}
-                    </div>
-                    <div style={{ 
-                      fontSize: '0.8rem', 
-                      color: 'var(--text-secondary)',
-                      marginBottom: '0.75rem'
-                    }}>
-                      <span style={{ 
-                        background: item.type === 'image-to-video' ? '#10b981' : '#6366f1',
-                        color: 'white',
-                        padding: '2px 6px',
-                        borderRadius: '4px',
-                        fontSize: '0.7rem',
-                        marginRight: '0.5rem'
-                      }}>
-                        {item.type === 'image-to-video' ? '图生' : '文生'}
-                      </span>
-                      {item.duration}秒 · {item.aspectRatio} · {formatDate(item.createdAt)}
-                    </div>
-                    <div style={{ display: 'flex', gap: '0.5rem' }}>
-                      <button 
-                        className="btn btn-small"
-                        onClick={() => {
-                          handleUsePrompt(item);
-                          setShowSavedPrompts(false);
-                        }}
-                        style={{ flex: 1 }}
-                      >
-                        使用
-                      </button>
-                      <button 
-                        className="btn btn-secondary btn-small btn-icon"
-                        onClick={() => handleDeletePrompt(item.id)}
-                        title="删除"
-                      >
-                        ×
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </section>
-          )}
-
-          {/* 图生视频模块 */}
-          <section className="card" style={{ marginBottom: '2rem', marginTop: '1rem' }}>
-            <h2 className="section-title">图生视频</h2>
-            
-            <div className="form-group">
-              <label className="label">上传图片</label>
-              <div style={{ display: 'flex', gap: '1rem', alignItems: 'flex-start' }}>
-                <div 
-                  className="image-upload-area"
-                  onClick={() => document.getElementById('imageInput').click()}
-                  style={{
-                    width: '120px',
-                    height: '160px',
-                    border: '2px dashed var(--border-color)',
-                    borderRadius: '12px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    cursor: 'pointer',
-                    overflow: 'hidden',
-                    background: imageUrl ? 'transparent' : 'var(--bg-secondary)',
-                    position: 'relative',
-                    flexShrink: 0
-                  }}
-                >
-                  {imageUrl ? (
-                    <>
-                      <img 
-                        src={imageUrl} 
-                        alt="预览" 
-                        style={{ 
-                          width: '100%', 
-                          height: '100%', 
-                          objectFit: 'cover' 
-                        }} 
-                      />
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleClearImage();
-                        }}
-                        style={{
-                          position: 'absolute',
-                          top: '4px',
-                          right: '4px',
-                          width: '24px',
-                          height: '24px',
-                          borderRadius: '50%',
-                          background: 'rgba(0,0,0,0.6)',
-                          color: 'white',
-                          border: 'none',
-                          cursor: 'pointer',
-                          fontSize: '14px',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center'
-                        }}
-                      >
-                        ×
-                      </button>
-                    </>
-                  ) : (
-                    <div style={{ textAlign: 'center', color: 'var(--text-secondary)' }}>
-                      <div style={{ fontSize: '2rem' }}>+</div>
-                      <div style={{ fontSize: '0.75rem' }}>点击上传</div>
-                    </div>
-                  )}
-                  <input 
-                    id="imageInput"
-                    type="file" 
-                    accept="image/*" 
-                    onChange={handleImageSelect}
-                    style={{ display: 'none' }}
-                  />
-                </div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div className="hint" style={{ marginBottom: '0.5rem' }}>
-                    支持 JPG、PNG 格式，最大 50MB
-                  </div>
-                  <div className="hint" style={{ color: 'var(--text-secondary)' }}>
-                    推荐使用 9:16 比例的图片以获得最佳效果
-                  </div>
-                </div>
-              </div>
-            </div>
-            
-            <div className="form-group">
-              <label className="label">提示词</label>
-              <textarea
-                className="input textarea"
-                value={imagePrompt}
-                onChange={(e) => setImagePrompt(e.target.value)}
-                placeholder="描述你想要的视频效果..."
-                maxLength="4000"
-                style={{ minHeight: '80px' }}
-              />
-            </div>
-            
-            <div className="form-row">
-              <div className="form-group">
-                <label className="label">时长</label>
-                <select 
-                  className="input select"
-                  value={imageDuration}
-                  onChange={(e) => setImageDuration(e.target.value)}
-                >
-                  <option value="10">10秒</option>
-                  <option value="15">15秒</option>
-                </select>
-              </div>
-              
-              <div className="form-group">
-                <label className="label">画面比例</label>
-                <select 
-                  className="input select"
-                  value={imageAspectRatio}
-                  onChange={(e) => setImageAspectRatio(e.target.value)}
-                >
-                  <option value="9:16">竖屏 (9:16)</option>
-                  <option value="16:9">横屏 (16:9)</option>
-                </select>
-              </div>
-
-              <div className="form-group">
-                <label className="label">批量生产</label>
-                <select 
-                  className="input select"
-                  value={imageBatchSize}
-                  onChange={(e) => setImageBatchSize(Number(e.target.value))}
-                >
-                  <option value="1">1个</option>
-                  <option value="3">3个</option>
-                  <option value="5">5个</option>
-                  <option value="10">10个</option>
-                </select>
-              </div>
-
-              <div className="form-group" style={{ flex: '0 0 auto' }}>
-                <button 
-                  className="btn"
-                  onClick={handleGenerateFromImage}
-                  disabled={isGeneratingImageVideo || isUploading || !imageFile}
-                  style={{ minWidth: '120px' }}
-                >
-                  {isUploading ? '上传中...' : isGeneratingImageVideo ? '生成中...' : '生成视频'}
-                </button>
-              </div>
-            </div>
-            
-            <div style={{ marginTop: '0.5rem', display: 'flex', gap: '0.5rem' }}>
-              <button 
-                className="btn btn-secondary btn-small"
-                onClick={handleSaveImagePrompt}
-                style={{ flex: 1 }}
-              >
-                💾 保存提示词
-              </button>
-            </div>
-          </section>
-
-          {/* 图生图模块 */}
-          <section className="card" style={{ marginBottom: '2rem', marginTop: '1rem' }}>
-            <h2 className="section-title">全能图片PRO - 图生图</h2>
-
-            <div className="form-group">
-              <label className="label">上传原图 ({editImageUrls.length}/10)</label>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem', alignItems: 'flex-start' }}>
-                {editImageUrls.map((url, index) => (
-                  <div
-                    key={index}
-                    style={{
-                      width: '100px',
-                      height: '100px',
-                      border: '2px solid var(--border-color)',
-                      borderRadius: '12px',
-                      overflow: 'hidden',
-                      position: 'relative',
-                      flexShrink: 0
-                    }}
+                    🎬 视频生成
+                  </button>
+                  <button
+                    className={`tab-button ${leftMainTab === 'image' ? 'active' : ''}`}
+                    onClick={() => setLeftMainTab('image')}
                   >
-                    <img
-                      src={url}
-                      alt={`图片${index + 1}`}
-                      style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                    />
+                    🖼️ 图片生成
+                  </button>
+                </div>
+
+                {/* 视频生成Tab内容 */}
+                {leftMainTab === 'video' && (
+                  <>
+                    <div className="form-group" style={{ marginBottom: '1.5rem' }}>
+                      <label className="label">选择功能</label>
+                      <div style={{ display: 'flex', gap: '0.5rem' }}>
+                        <button
+                          className={`function-select-btn ${videoFunction === 'text-to-video' ? 'active' : ''}`}
+                          onClick={() => setVideoFunction('text-to-video')}
+                        >
+                          全能视频S · 文生视频
+                        </button>
+                        <button
+                          className={`function-select-btn ${videoFunction === 'image-to-video' ? 'active' : ''}`}
+                          onClick={() => setVideoFunction('image-to-video')}
+                        >
+                          视频S · 图生视频
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* 文生视频模块 */}
+                    {videoFunction === 'text-to-video' && (
+                      <>
+                        <div className="form-group">
+                          <label className="label">提示词</label>
+                          <textarea
+                            className="input textarea"
+                            value={prompt}
+                            onChange={(e) => setPrompt(e.target.value)}
+                            placeholder="描述你想要生成的视频内容..."
+                            maxLength="4000"
+                          />
+                        </div>
+
+                        <div className="form-row">
+                          <div className="form-group">
+                            <label className="label">时长</label>
+                            <select
+                              className="input select"
+                              value={duration}
+                              onChange={(e) => setDuration(e.target.value)}
+                            >
+                              <option value="10">10秒</option>
+                              <option value="15">15秒</option>
+                            </select>
+                          </div>
+
+                          <div className="form-group">
+                            <label className="label">画面比例</label>
+                            <select
+                              className="input select"
+                              value={aspectRatio}
+                              onChange={(e) => setAspectRatio(e.target.value)}
+                            >
+                              <option value="9:16">竖屏 (9:16)</option>
+                              <option value="16:9">横屏 (16:9)</option>
+                            </select>
+                          </div>
+
+                          <div className="form-group">
+                            <label className="label">批量</label>
+                            <select
+                              className="input select"
+                              value={batchSize}
+                              onChange={(e) => setBatchSize(Number(e.target.value))}
+                            >
+                              <option value="1">1个</option>
+                              <option value="3">3个</option>
+                              <option value="5">5个</option>
+                              <option value="10">10个</option>
+                            </select>
+                          </div>
+
+                          <div className="form-group" style={{ flex: '0 0 auto' }}>
+                            <button
+                              className="btn"
+                              onClick={handleGenerate}
+                              disabled={isGenerating}
+                              style={{ minWidth: '100px' }}
+                            >
+                              {isGenerating ? '生成中' : '生成'}
+                            </button>
+                          </div>
+                        </div>
+
+                        <div style={{ marginTop: '1rem', display: 'flex', gap: '0.5rem' }}>
+                          <button
+                            className="btn btn-secondary btn-small"
+                            onClick={handleSavePrompt}
+                            style={{ flex: 1 }}
+                          >
+                            💾 保存提示词
+                          </button>
+                        </div>
+                      </>
+                    )}
+
+                    {/* 图生视频模块 */}
+                    {videoFunction === 'image-to-video' && (
+                      <>
+                        <div className="form-group">
+                          <label className="label">上传图片</label>
+                          <div style={{ display: 'flex', gap: '1rem', alignItems: 'flex-start' }}>
+                            <div
+                              className="image-upload-area"
+                              onClick={() => document.getElementById('imageInput').click()}
+                              style={{
+                                width: '120px',
+                                height: '160px',
+                                border: '2px dashed var(--border-color)',
+                                borderRadius: '12px',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                cursor: 'pointer',
+                                overflow: 'hidden',
+                                background: imageUrl ? 'transparent' : 'var(--bg-secondary)',
+                                position: 'relative',
+                                flexShrink: 0
+                              }}
+                            >
+                              {imageUrl ? (
+                                <>
+                                  <img
+                                    src={imageUrl}
+                                    alt="预览"
+                                    style={{
+                                      width: '100%',
+                                      height: '100%',
+                                      objectFit: 'cover'
+                                    }}
+                                  />
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleClearImage();
+                                    }}
+                                    style={{
+                                      position: 'absolute',
+                                      top: '4px',
+                                      right: '4px',
+                                      width: '24px',
+                                      height: '24px',
+                                      borderRadius: '50%',
+                                      background: 'rgba(0,0,0,0.6)',
+                                      color: 'white',
+                                      border: 'none',
+                                      cursor: 'pointer',
+                                      fontSize: '14px',
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      justifyContent: 'center'
+                                    }}
+                                  >
+                                    ×
+                                  </button>
+                                </>
+                              ) : (
+                                <div style={{ textAlign: 'center', color: 'var(--text-secondary)' }}>
+                                  <div style={{ fontSize: '2rem' }}>+</div>
+                                  <div style={{ fontSize: '0.75rem' }}>点击上传</div>
+                                </div>
+                              )}
+                              <input
+                                id="imageInput"
+                                type="file"
+                                accept="image/*"
+                                onChange={handleImageSelect}
+                                style={{ display: 'none' }}
+                              />
+                            </div>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div className="hint" style={{ marginBottom: '0.5rem' }}>
+                                支持 JPG、PNG 格式，最大 50MB
+                              </div>
+                              <div className="hint" style={{ color: 'var(--text-secondary)' }}>
+                                推荐使用 9:16 比例的图片以获得最佳效果
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="form-group">
+                          <label className="label">提示词</label>
+                          <textarea
+                            className="input textarea"
+                            value={imagePrompt}
+                            onChange={(e) => setImagePrompt(e.target.value)}
+                            placeholder="描述你想要的视频效果..."
+                            maxLength="4000"
+                            style={{ minHeight: '80px' }}
+                          />
+                        </div>
+
+                        <div className="form-row">
+                          <div className="form-group">
+                            <label className="label">时长</label>
+                            <select
+                              className="input select"
+                              value={imageDuration}
+                              onChange={(e) => setImageDuration(e.target.value)}
+                            >
+                              <option value="10">10秒</option>
+                              <option value="15">15秒</option>
+                            </select>
+                          </div>
+
+                          <div className="form-group">
+                            <label className="label">画面比例</label>
+                            <select
+                              className="input select"
+                              value={imageAspectRatio}
+                              onChange={(e) => setImageAspectRatio(e.target.value)}
+                            >
+                              <option value="9:16">竖屏 (9:16)</option>
+                              <option value="16:9">横屏 (16:9)</option>
+                            </select>
+                          </div>
+
+                          <div className="form-group">
+                            <label className="label">批量</label>
+                            <select
+                              className="input select"
+                              value={imageBatchSize}
+                              onChange={(e) => setImageBatchSize(Number(e.target.value))}
+                            >
+                              <option value="1">1个</option>
+                              <option value="3">3个</option>
+                              <option value="5">5个</option>
+                              <option value="10">10个</option>
+                            </select>
+                          </div>
+
+                          <div className="form-group" style={{ flex: '0 0 auto' }}>
+                            <button
+                              className="btn"
+                              onClick={handleGenerateFromImage}
+                              disabled={isGeneratingImageVideo || isUploading || !imageFile}
+                              style={{ minWidth: '100px' }}
+                            >
+                              {isUploading ? '上传中' : isGeneratingImageVideo ? '生成中' : '生成'}
+                            </button>
+                          </div>
+                        </div>
+
+                        <div style={{ marginTop: '1rem', display: 'flex', gap: '0.5rem' }}>
+                          <button
+                            className="btn btn-secondary btn-small"
+                            onClick={handleSaveImagePrompt}
+                            style={{ flex: 1 }}
+                          >
+                            💾 保存提示词
+                          </button>
+                        </div>
+                      </>
+                    )}
+                  </>
+                )}
+
+                {/* 图片生成Tab内容 */}
+                {leftMainTab === 'image' && (
+                  <>
+                    <div className="form-group" style={{ marginBottom: '1.5rem' }}>
+                      <label className="label">选择功能</label>
+                      <div style={{ display: 'flex', gap: '0.5rem' }}>
+                        <button
+                          className={`function-select-btn ${imageFunction === 'image-to-image' ? 'active' : ''}`}
+                          onClick={() => setImageFunction('image-to-image')}
+                        >
+                          全能图片PRO · 图生图
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* 图生图模块 */}
+                    {imageFunction === 'image-to-image' && (
+                      <>
+                        <div className="form-group">
+                          <label className="label">上传原图 ({editImageUrls.length}/10)</label>
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem', alignItems: 'flex-start' }}>
+                            {editImageUrls.map((url, index) => (
+                              <div
+                                key={index}
+                                style={{
+                                  width: '100px',
+                                  height: '100px',
+                                  border: '2px solid var(--border-color)',
+                                  borderRadius: '12px',
+                                  overflow: 'hidden',
+                                  position: 'relative',
+                                  flexShrink: 0
+                                }}
+                              >
+                                <img
+                                  src={url}
+                                  alt={`图片${index + 1}`}
+                                  style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                                />
+                                <button
+                                  onClick={() => handleRemoveEditImage(index)}
+                                  style={{
+                                    position: 'absolute',
+                                    top: '4px',
+                                    right: '4px',
+                                    width: '24px',
+                                    height: '24px',
+                                    borderRadius: '50%',
+                                    background: 'rgba(0,0,0,0.6)',
+                                    color: 'white',
+                                    border: 'none',
+                                    cursor: 'pointer',
+                                    fontSize: '14px',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center'
+                                  }}
+                                >
+                                  ×
+                                </button>
+                              </div>
+                            ))}
+                            {editImageUrls.length < 10 && (
+                              <div
+                                className="image-upload-area"
+                                onClick={() => document.getElementById('editImageInput').click()}
+                                style={{
+                                  width: '100px',
+                                  height: '100px',
+                                  border: '2px dashed var(--border-color)',
+                                  borderRadius: '12px',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  cursor: 'pointer',
+                                  background: 'var(--bg-secondary)',
+                                  flexShrink: 0
+                                }}
+                              >
+                                <div style={{ textAlign: 'center', color: 'var(--text-secondary)' }}>
+                                  <div style={{ fontSize: '1.5rem' }}>+</div>
+                                  <div style={{ fontSize: '0.7rem' }}>添加</div>
+                                </div>
+                              </div>
+                            )}
+                            {editImageUrls.length > 0 && (
+                              <button
+                                onClick={handleClearEditImages}
+                                className="btn btn-secondary btn-small"
+                                style={{ height: 'fit-content', marginTop: 'auto' }}
+                              >
+                                清空全部
+                              </button>
+                            )}
+                            <input
+                              id="editImageInput"
+                              type="file"
+                              accept="image/*"
+                              multiple
+                              onChange={handleEditImageSelect}
+                              style={{ display: 'none' }}
+                            />
+                          </div>
+                          <div style={{ marginTop: '0.5rem', display: 'flex', gap: '1rem' }}>
+                            <div className="hint">
+                              支持 JPG、PNG 格式，每张最大 10MB，最多 10 张
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="form-group">
+                          <label className="label">提示词</label>
+                          <textarea
+                            className="input textarea"
+                            value={editPrompt}
+                            onChange={(e) => setEditPrompt(e.target.value)}
+                            placeholder="描述你想要的图片效果..."
+                            maxLength="4000"
+                            style={{ minHeight: '80px' }}
+                          />
+                        </div>
+
+                        <div className="form-row">
+                          <div className="form-group">
+                            <label className="label">分辨率</label>
+                            <select
+                              className="input select"
+                              value={editResolution}
+                              onChange={(e) => setEditResolution(e.target.value)}
+                            >
+                              <option value="1k">1K</option>
+                              <option value="2k">2K</option>
+                              <option value="4k">4K</option>
+                            </select>
+                          </div>
+
+                          <div className="form-group">
+                            <label className="label">画面比例</label>
+                            <select
+                              className="input select"
+                              value={editAspectRatio}
+                              onChange={(e) => setEditAspectRatio(e.target.value)}
+                            >
+                              <option value="1:1">1:1</option>
+                              <option value="16:9">横屏 (16:9)</option>
+                              <option value="9:16">竖屏 (9:16)</option>
+                              <option value="4:3">4:3</option>
+                              <option value="3:4">3:4</option>
+                              <option value="3:2">3:2</option>
+                              <option value="2:3">2:3</option>
+                              <option value="5:4">5:4</option>
+                              <option value="4:5">4:5</option>
+                              <option value="21:9">21:9</option>
+                            </select>
+                          </div>
+
+                          <div className="form-group">
+                            <label className="label">批量</label>
+                            <select
+                              className="input select"
+                              value={editBatchSize}
+                              onChange={(e) => setEditBatchSize(Number(e.target.value))}
+                            >
+                              <option value="1">1个</option>
+                              <option value="3">3个</option>
+                              <option value="5">5个</option>
+                              <option value="10">10个</option>
+                            </select>
+                          </div>
+
+                          <div className="form-group" style={{ flex: '0 0 auto' }}>
+                            <button
+                              className="btn"
+                              onClick={handleGenerateEditImage}
+                              disabled={isGeneratingEditImage || isUploadingEditImage || editImageFiles.length === 0}
+                              style={{ minWidth: '100px' }}
+                            >
+                              {isUploadingEditImage ? '上传中' : isGeneratingEditImage ? '生成中' : '生成'}
+                            </button>
+                          </div>
+                        </div>
+
+                        <div style={{ marginTop: '1rem', display: 'flex', gap: '0.5rem' }}>
+                          <button
+                            className="btn btn-secondary btn-small"
+                            onClick={handleSaveEditPrompt}
+                            style={{ flex: 1 }}
+                          >
+                            💾 保存提示词
+                          </button>
+                        </div>
+                      </>
+                    )}
+                  </>
+                )}
+              </div>
+
+              {/* 保存的提示词 */}
+              {showSavedPrompts && savedPrompts.length > 0 && (
+                <div className="card" style={{ marginBottom: '2rem' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+                    <h2 className="section-title" style={{ marginBottom: 0, fontSize: '1.1rem' }}>
+                      保存的提示词 ({savedPrompts.length})
+                    </h2>
                     <button
-                      onClick={() => handleRemoveEditImage(index)}
-                      style={{
-                        position: 'absolute',
-                        top: '4px',
-                        right: '4px',
-                        width: '24px',
-                        height: '24px',
-                        borderRadius: '50%',
-                        background: 'rgba(0,0,0,0.6)',
-                        color: 'white',
-                        border: 'none',
-                        cursor: 'pointer',
-                        fontSize: '14px',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center'
-                      }}
+                      className="btn btn-secondary btn-small btn-icon"
+                      onClick={() => setShowSavedPrompts(false)}
                     >
                       ×
                     </button>
                   </div>
-                ))}
-                {editImageUrls.length < 10 && (
-                  <div
-                    className="image-upload-area"
-                    onClick={() => document.getElementById('editImageInput').click()}
-                    style={{
-                      width: '100px',
-                      height: '100px',
-                      border: '2px dashed var(--border-color)',
-                      borderRadius: '12px',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      cursor: 'pointer',
-                      background: 'var(--bg-secondary)',
-                      flexShrink: 0
-                    }}
-                  >
-                    <div style={{ textAlign: 'center', color: 'var(--text-secondary)' }}>
-                      <div style={{ fontSize: '1.5rem' }}>+</div>
-                      <div style={{ fontSize: '0.7rem' }}>添加</div>
-                    </div>
-                  </div>
-                )}
-                {editImageUrls.length > 0 && (
-                  <button
-                    onClick={handleClearEditImages}
-                    className="btn btn-secondary btn-small"
-                    style={{ height: 'fit-content', marginTop: 'auto' }}
-                  >
-                    清空全部
-                  </button>
-                )}
-                <input
-                  id="editImageInput"
-                  type="file"
-                  accept="image/*"
-                  multiple
-                  onChange={handleEditImageSelect}
-                  style={{ display: 'none' }}
-                />
-              </div>
-              <div style={{ marginTop: '0.5rem', display: 'flex', gap: '1rem' }}>
-                <div className="hint">
-                  支持 JPG、PNG 格式，每张最大 10MB，最多 10 张
-                </div>
-              </div>
-              <div className="hint" style={{ color: 'var(--text-secondary)' }}>
-                基于原图生成新图片，支持风格迁移、内容替换等
-              </div>
-            </div>
-
-            <div className="form-group">
-              <label className="label">提示词</label>
-              <textarea
-                className="input textarea"
-                value={editPrompt}
-                onChange={(e) => setEditPrompt(e.target.value)}
-                placeholder="描述你想要的图片效果..."
-                maxLength="4000"
-                style={{ minHeight: '80px' }}
-              />
-            </div>
-
-            <div className="form-row">
-              <div className="form-group">
-                <label className="label">分辨率</label>
-                <select
-                  className="input select"
-                  value={editResolution}
-                  onChange={(e) => setEditResolution(e.target.value)}
-                >
-                  <option value="1k">1K</option>
-                  <option value="2k">2K</option>
-                  <option value="4k">4K</option>
-                </select>
-              </div>
-
-              <div className="form-group">
-                <label className="label">画面比例</label>
-                <select
-                  className="input select"
-                  value={editAspectRatio}
-                  onChange={(e) => setEditAspectRatio(e.target.value)}
-                >
-                  <option value="1:1">1:1</option>
-                  <option value="16:9">横屏 (16:9)</option>
-                  <option value="9:16">竖屏 (9:16)</option>
-                  <option value="4:3">4:3</option>
-                  <option value="3:4">3:4</option>
-                  <option value="3:2">3:2</option>
-                  <option value="2:3">2:3</option>
-                  <option value="5:4">5:4</option>
-                  <option value="4:5">4:5</option>
-                  <option value="21:9">21:9</option>
-                </select>
-              </div>
-
-              <div className="form-group">
-                <label className="label">批量生产</label>
-                <select
-                  className="input select"
-                  value={editBatchSize}
-                  onChange={(e) => setEditBatchSize(Number(e.target.value))}
-                >
-                  <option value="1">1个</option>
-                  <option value="3">3个</option>
-                  <option value="5">5个</option>
-                  <option value="10">10个</option>
-                </select>
-              </div>
-
-              <div className="form-group" style={{ flex: '0 0 auto' }}>
-                <button
-                  className="btn"
-                  onClick={handleGenerateEditImage}
-                  disabled={isGeneratingEditImage || isUploadingEditImage || editImageFiles.length === 0}
-                  style={{ minWidth: '120px' }}
-                >
-                  {isUploadingEditImage ? '上传中...' : isGeneratingEditImage ? '生成中...' : '生成图片'}
-                </button>
-              </div>
-            </div>
-
-            <div style={{ marginTop: '0.5rem', display: 'flex', gap: '0.5rem' }}>
-              <button
-                className="btn btn-secondary btn-small"
-                onClick={handleSaveEditPrompt}
-                style={{ flex: 1 }}
-              >
-                💾 保存提示词
-              </button>
-            </div>
-          </section>
-
-          {/* 图生图历史记录 */}
-          <section className="card" style={{ marginBottom: '2rem' }}>
-            <h2 className="section-title">图生图历史记录 ({editTasks.length})</h2>
-            {editTasks.length === 0 ? (
-              <div style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-secondary)' }}>
-                暂无图生图记录
-              </div>
-            ) : (
-              <div className="task-grid">
-                {editTasks.map(task => (
-                  <div key={task.taskId} className="task-card">
-                    <div className="task-preview">
-                      {task.resultUrl ? (
-                        <img
-                          src={task.resultUrl}
-                          alt="结果"
-                          style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                          onClick={() => window.open(task.resultUrl, '_blank')}
-                        />
-                      ) : (
-                        <div style={{ 
-                          width: '100%', 
-                          height: '100%', 
-                          display: 'flex', 
-                          alignItems: 'center', 
-                          justifyContent: 'center',
+                  <div style={{ display: 'grid', gap: '0.75rem', maxHeight: '400px', overflowY: 'auto' }}>
+                    {savedPrompts.map(item => (
+                      <div
+                        key={item.id}
+                        style={{
+                          padding: '1rem',
                           background: 'var(--bg-secondary)',
-                          color: 'var(--text-secondary)'
+                          borderRadius: '12px',
+                          border: '1px solid var(--border-color)'
+                        }}
+                      >
+                        <div style={{
+                          fontSize: '0.9rem',
+                          marginBottom: '0.5rem',
+                          lineHeight: '1.4'
                         }}>
-                          {task.status === 'RUNNING' ? (
-                            <>
-                              <div className="spinner" style={{ width: '40px', height: '40px' }} />
-                              <div style={{ marginTop: '0.5rem', fontSize: '0.75rem' }}>生成中</div>
-                            </>
-                          ) : (
-                            <span>等待中</span>
-                          )}
+                          {item.prompt}
                         </div>
-                      )}
-                    </div>
-                    <div className="task-info">
-                      <div className="task-prompt" title={task.prompt}>
-                        {task.prompt.length > 30 ? task.prompt.substring(0, 30) + '...' : task.prompt}
-                      </div>
-                      <div className="task-meta">
-                        <span>{task.resolution} • {task.aspectRatio}</span>
-                      </div>
-                      <div className="task-actions">
-                        {task.resultUrl && (
+                        <div style={{
+                          fontSize: '0.8rem',
+                          color: 'var(--text-secondary)',
+                          marginBottom: '0.75rem'
+                        }}>
+                          <span style={{
+                            background: item.type === 'image-to-video' ? '#10b981' : item.type === 'image-to-image' ? '#8b5cf6' : '#6366f1',
+                            color: 'white',
+                            padding: '2px 6px',
+                            borderRadius: '4px',
+                            fontSize: '0.7rem',
+                            marginRight: '0.5rem'
+                          }}>
+                            {item.type === 'image-to-video' ? '图生视频' : item.type === 'image-to-image' ? '图生图' : '文生视频'}
+                          </span>
+                          {item.duration ? `${item.duration}秒 · ` : ''}{item.aspectRatio} · {formatDate(item.createdAt)}
+                        </div>
+                        <div style={{ display: 'flex', gap: '0.5rem' }}>
                           <button
-                            className="btn btn-small btn-primary"
-                            onClick={() => window.open(task.resultUrl, '_blank')}
-                            style={{ flex: 1, minWidth: 0 }}
+                            className="btn btn-small"
+                            onClick={() => {
+                              handleUsePrompt(item);
+                              setShowSavedPrompts(false);
+                            }}
+                            style={{ flex: 1 }}
                           >
-                            下载
+                            使用
                           </button>
-                        )}
-                        <button
-                          className="btn btn-small btn-secondary"
-                          onClick={() => handleDeleteEditTask(task.taskId)}
-                        >
-                          删除
-                        </button>
+                          <button
+                            className="btn btn-secondary btn-small btn-icon"
+                            onClick={() => handleDeletePrompt(item.id)}
+                            title="删除"
+                          >
+                            ×
+                          </button>
+                        </div>
                       </div>
-                    </div>
+                    ))}
                   </div>
-                ))}
-              </div>
-            )}
-          </section>
+                </div>
+              )}
+
+              {/* 显示保存的提示词按钮 */}
+              {!showSavedPrompts && savedPrompts.length > 0 && (
+                <button
+                  className="btn btn-secondary"
+                  onClick={() => setShowSavedPrompts(true)}
+                  style={{ width: '100%' }}
+                >
+                  📋 已保存提示词 ({savedPrompts.length})
+                </button>
+              )}
             </div>
 
             {/* 右侧：历史记录 */}
-            <div style={{ flex: '1', minWidth: '0' }}>
-          <section>
-            <h2 className="section-title">历史记录 ({tasks.length})</h2>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-              <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-                {isLoadingFromCloud ? '正在从云端加载...' : '任务数据保存在云端数据库'}
-              </div>
-            </div>
-            {isLoadingFromCloud ? (
-              <div className="card" style={{ textAlign: 'center', padding: '3rem' }}>
-                <p style={{ color: 'var(--text-secondary)' }}>正在从云端加载任务...</p>
-                <div className="spinner" style={{ margin: '1rem auto 0' }} />
-              </div>
-            ) : tasks.length === 0 ? (
-              <div className="card" style={{ textAlign: 'center', padding: '3rem' }}>
-                <p style={{ color: 'var(--text-secondary)' }}>暂无生成的视频</p>
-              </div>
-            ) : (
-              <div className="task-grid">
-                {tasks.map(task => (
-                  <div key={task.taskId} className="task-card">
-                    <div 
-                      className="task-preview"
-                      onClick={task.resultUrl ? () => handlePlayVideo(task.resultUrl) : undefined}
-                      style={task.resultUrl ? { cursor: 'pointer' } : {}}
-                      onMouseEnter={(e) => {
-                        if (!task.resultUrl) return;
-                        const video = e.currentTarget.querySelector('video');
-                        const img = e.currentTarget.querySelector('img');
-                        if (video) {
-                          video.style.display = 'block';
-                          if (img) img.style.display = 'none';
-                          video.play().catch(() => {});
-                        }
-                      }}
-                      onMouseLeave={(e) => {
-                        if (!task.resultUrl) return;
-                        const video = e.currentTarget.querySelector('video');
-                        const img = e.currentTarget.querySelector('img');
-                        if (video) {
-                          video.pause();
-                          video.currentTime = 0.1;
-                          if (task.previewUrl && img) {
-                            video.style.display = 'none';
-                            img.style.display = 'block';
-                          }
-                        }
-                      }}
-                    >
-                      {task.resultUrl ? (
-                        <>
-                          <video 
-                            ref={(videoEl) => {
-                              if (videoEl && !videoEl.dataset.loaded && !task.previewUrl) {
-                                videoEl.dataset.loaded = 'true';
-                                videoEl.currentTime = 0.1;
-                              }
-                            }}
-                            src={task.resultUrl}
-                            muted
-                            preload="metadata"
-                            loop
-                            style={{ display: task.previewUrl ? 'none' : 'block' }}
-                            onSeeked={(e) => {
-                              const video = e.target;
-                              if (!task.previewUrl) {
-                                try {
-                                  const canvas = document.createElement('canvas');
-                                  canvas.width = video.videoWidth || 720;
-                                  canvas.height = video.videoHeight || 1280;
-                                  const ctx = canvas.getContext('2d');
-                                  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-                                  const thumbnail = canvas.toDataURL('image/jpeg', 0.8);
-                                  setTasks(prev => prev.map(t => 
-                                    t.taskId === task.taskId 
-                                      ? { ...t, previewUrl: thumbnail }
-                                      : t
-                                  ));
-                                } catch (err) {
-                                  console.error('生成预览图失败:', err);
+            <div style={{ flex: '1', minWidth: '0', display: 'flex', flexDirection: 'column' }}>
+              <div className="card" style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+                {/* 历史记录Tab切换 */}
+                <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1.5rem', borderBottom: '2px solid var(--border-color)', paddingBottom: '0.75rem' }}>
+                  <button
+                    className={`tab-button ${rightTab === 'all' ? 'active' : ''}`}
+                    onClick={() => setRightTab('all')}
+                  >
+                    全部 ({tasks.length + editTasks.length})
+                  </button>
+                  <button
+                    className={`tab-button ${rightTab === 'video' ? 'active' : ''}`}
+                    onClick={() => setRightTab('video')}
+                  >
+                    视频 ({tasks.length})
+                  </button>
+                  <button
+                    className={`tab-button ${rightTab === 'image' ? 'active' : ''}`}
+                    onClick={() => setRightTab('image')}
+                  >
+                    图片 ({editTasks.length})
+                  </button>
+                </div>
+
+                {/* 全部内容 */}
+                {rightTab === 'all' && (
+                  <div style={{ flex: 1, overflowY: 'auto', minHeight: '400px' }}>
+                    {isLoadingFromCloud ? (
+                      <div style={{ textAlign: 'center', padding: '3rem' }}>
+                        <p style={{ color: 'var(--text-secondary)' }}>正在从云端加载任务...</p>
+                        <div className="spinner" style={{ margin: '1rem auto 0' }} />
+                      </div>
+                    ) : tasks.length === 0 && editTasks.length === 0 ? (
+                      <div style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-secondary)' }}>
+                        暂无生成记录
+                      </div>
+                    ) : (
+                      <div className="task-grid">
+                        {/* 视频任务 */}
+                        {tasks.map(task => (
+                          <div key={task.taskId} className="task-card">
+                            <div
+                              className="task-preview"
+                              onClick={task.resultUrl ? () => handlePlayVideo(task.resultUrl) : undefined}
+                              style={task.resultUrl ? { cursor: 'pointer' } : {}}
+                              onMouseEnter={(e) => {
+                                if (!task.resultUrl) return;
+                                const video = e.currentTarget.querySelector('video');
+                                const img = e.currentTarget.querySelector('img');
+                                if (video) {
+                                  video.style.display = 'block';
+                                  if (img) img.style.display = 'none';
+                                  video.play().catch(() => {});
                                 }
-                              }
-                            }}
-                          />
-                          {task.previewUrl && (
-                            <img 
-                              src={task.previewUrl}
-                              alt={task.prompt}
-                            />
-                          )}
-                          <div className="play-overlay">
-                            ▶
-                          </div>
-                        </>
-                      ) : (
-                        <div style={{
-                          position: 'absolute',
-                          top: '50%',
-                          left: '50%',
-                          transform: 'translate(-50%, -50%)',
-                          textAlign: 'center',
-                          color: 'var(--text-secondary)'
-                        }}>
-                          <div className="spinner" style={{ margin: '0 auto 1rem' }} />
-                          <p>{task.status}</p>
-                        </div>
-                      )}
-                    </div>
-                    
-                    <div className="task-info">
-                      <span className={`task-badge ${task.type === 'image-to-video' ? 'image-video' : 'video'}`}>
-                        {task.type === 'image-to-video' ? '图生视频' : '文生视频'}
-                      </span>
-                      <div className="task-id">TaskID: {task.taskId}</div>
-                      <div className="task-prompt" title={task.prompt}>{task.prompt}</div>
-                      <div className="task-meta">
-                        <span className={`task-status ${getTaskStatusClass(task.status)}`}>
-                          {task.status}
-                        </span>
-                        <span className="task-time">
-                          🕐 {formatDate(task.createdAt)}
-                        </span>
-                      </div>
-                      
-                      {task.usage && formatCost(task.usage) && (
-                        <div className="task-cost">
-                          💰 {formatCost(task.usage)}
-                        </div>
-                      )}
-                      
-                      {task.progress > 0 && task.progress < 100 && (
-                        <div style={{ marginTop: '0.75rem' }}>
-                          <div className="progress-bar">
-                            <div 
-                              className="progress-fill"
-                              style={{ width: `${task.progress}%` }}
-                            />
-                          </div>
-                          <div style={{ 
-                            fontSize: '0.75rem', 
-                            color: 'var(--text-secondary)', 
-                            marginTop: '0.25rem' 
-                          }}>
-                            {task.progress}%
-                          </div>
-                        </div>
-                      )}
-                      
-                      <div className="task-actions">
-                        {task.resultUrl && (
-                          <>
-                            <button 
-                              className="btn btn-small"
-                              onClick={() => handleClone(task)}
-                              title="克隆此任务的提示词"
+                              }}
+                              onMouseLeave={(e) => {
+                                if (!task.resultUrl) return;
+                                const video = e.currentTarget.querySelector('video');
+                                const img = e.currentTarget.querySelector('img');
+                                if (video) {
+                                  video.pause();
+                                  video.currentTime = 0.1;
+                                  if (task.previewUrl && img) {
+                                    video.style.display = 'none';
+                                    img.style.display = 'block';
+                                  }
+                                }
+                              }}
                             >
-                              克隆
-                            </button>
-                            <button 
-                              className="btn btn-secondary btn-small"
-                              data-download={task.taskId}
-                              onClick={() => handleDownload(task.resultUrl, task.taskId)}
-                            >
-                              下载
-                            </button>
-                          </>
-                        )}
-                        <button 
-                          className="btn btn-secondary btn-small btn-icon"
-                          onClick={() => handleDelete(task.taskId)}
-                          title="删除"
-                        >
-                          ×
-                        </button>
+                              {task.resultUrl ? (
+                                <>
+                                  <video
+                                    ref={(videoEl) => {
+                                      if (videoEl && !videoEl.dataset.loaded && !task.previewUrl) {
+                                        videoEl.dataset.loaded = 'true';
+                                        videoEl.currentTime = 0.1;
+                                      }
+                                    }}
+                                    src={task.resultUrl}
+                                    muted
+                                    preload="metadata"
+                                    loop
+                                    style={{ display: task.previewUrl ? 'none' : 'block' }}
+                                    onSeeked={(e) => {
+                                      const video = e.target;
+                                      if (!task.previewUrl) {
+                                        try {
+                                          const canvas = document.createElement('canvas');
+                                          canvas.width = video.videoWidth || 720;
+                                          canvas.height = video.videoHeight || 1280;
+                                          const ctx = canvas.getContext('2d');
+                                          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                                          const thumbnail = canvas.toDataURL('image/jpeg', 0.8);
+                                          setTasks(prev => prev.map(t =>
+                                            t.taskId === task.taskId
+                                              ? { ...t, previewUrl: thumbnail }
+                                              : t
+                                          ));
+                                        } catch (err) {
+                                          console.error('生成预览图失败:', err);
+                                        }
+                                      }
+                                    }}
+                                  />
+                                  {task.previewUrl && (
+                                    <img
+                                      src={task.previewUrl}
+                                      alt={task.prompt}
+                                    />
+                                  )}
+                                  <div className="play-overlay">
+                                    ▶
+                                  </div>
+                                </>
+                              ) : (
+                                <div style={{
+                                  position: 'absolute',
+                                  top: '50%',
+                                  left: '50%',
+                                  transform: 'translate(-50%, -50%)',
+                                  textAlign: 'center',
+                                  color: 'var(--text-secondary)'
+                                }}>
+                                  <div className="spinner" style={{ margin: '0 auto 1rem' }} />
+                                  <p>{task.status}</p>
+                                </div>
+                              )}
+                            </div>
+
+                            <div className="task-info">
+                              <span className={`task-badge ${task.type === 'image-to-video' ? 'image-video' : 'video'}`}>
+                                {task.type === 'image-to-video' ? '图生视频' : '文生视频'}
+                              </span>
+                              <div className="task-id">TaskID: {task.taskId}</div>
+                              <div className="task-prompt" title={task.prompt}>{task.prompt}</div>
+                              <div className="task-meta">
+                                <span className={`task-status ${getTaskStatusClass(task.status)}`}>
+                                  {task.status}
+                                </span>
+                                <span className="task-time">
+                                  🕐 {formatDate(task.createdAt)}
+                                </span>
+                              </div>
+
+                              {task.usage && formatCost(task.usage) && (
+                                <div className="task-cost">
+                                  💰 {formatCost(task.usage)}
+                                </div>
+                              )}
+
+                              {task.progress > 0 && task.progress < 100 && (
+                                <div style={{ marginTop: '0.75rem' }}>
+                                  <div className="progress-bar">
+                                    <div
+                                      className="progress-fill"
+                                      style={{ width: `${task.progress}%` }}
+                                    />
+                                  </div>
+                                  <div style={{
+                                    fontSize: '0.75rem',
+                                    color: 'var(--text-secondary)',
+                                    marginTop: '0.25rem'
+                                  }}>
+                                    {task.progress}%
+                                  </div>
+                                </div>
+                              )}
+
+                              <div className="task-actions">
+                                {task.resultUrl && (
+                                  <>
+                                    <button
+                                      className="btn btn-small"
+                                      onClick={() => handleClone(task)}
+                                      title="克隆此任务的提示词"
+                                    >
+                                      克隆
+                                    </button>
+                                    <button
+                                      className="btn btn-secondary btn-small"
+                                      data-download={task.taskId}
+                                      onClick={() => handleDownload(task.resultUrl, task.taskId)}
+                                    >
+                                      下载
+                                    </button>
+                                  </>
+                                )}
+                                <button
+                                  className="btn btn-secondary btn-small btn-icon"
+                                  onClick={() => handleDelete(task.taskId)}
+                                  title="删除"
+                                >
+                                  ×
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                        {/* 图片任务 */}
+                        {editTasks.map(task => (
+                          <div key={task.taskId} className="task-card">
+                            <div className="task-preview">
+                              {task.resultUrl ? (
+                                <img
+                                  src={task.resultUrl}
+                                  alt="结果"
+                                  style={{ width: '100%', height: '100%', objectFit: 'cover', cursor: 'pointer' }}
+                                  onClick={() => window.open(task.resultUrl, '_blank')}
+                                />
+                              ) : (
+                                <div style={{
+                                  width: '100%',
+                                  height: '100%',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  background: 'var(--bg-secondary)',
+                                  color: 'var(--text-secondary)'
+                                }}>
+                                  {task.status === 'RUNNING' ? (
+                                    <>
+                                      <div className="spinner" style={{ width: '40px', height: '40px' }} />
+                                      <div style={{ marginTop: '0.5rem', fontSize: '0.75rem' }}>生成中</div>
+                                    </>
+                                  ) : (
+                                    <span>等待中</span>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                            <div className="task-info">
+                              <span className="task-badge edit">图生图</span>
+                              <div className="task-id">TaskID: {task.taskId}</div>
+                              <div className="task-prompt" title={task.prompt}>
+                                {task.prompt.length > 30 ? task.prompt.substring(0, 30) + '...' : task.prompt}
+                              </div>
+                              <div className="task-meta">
+                                <span className={`task-status ${getTaskStatusClass(task.status)}`}>
+                                  {task.status}
+                                </span>
+                                <span className="task-time">
+                                  🕐 {formatDate(task.createdAt)}
+                                </span>
+                              </div>
+                              <div className="task-actions">
+                                {task.resultUrl && (
+                                  <button
+                                    className="btn btn-small"
+                                    onClick={() => window.open(task.resultUrl, '_blank')}
+                                    style={{ flex: 1, minWidth: 0 }}
+                                  >
+                                    下载
+                                  </button>
+                                )}
+                                <button
+                                  className="btn btn-small btn-secondary"
+                                  onClick={() => handleDeleteEditTask(task.taskId)}
+                                >
+                                  删除
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
                       </div>
-                    </div>
+                    )}
                   </div>
-                ))}
+                )}
+
+                {/* 视频内容 */}
+                {rightTab === 'video' && (
+                  <div style={{ flex: 1, overflowY: 'auto', minHeight: '400px' }}>
+                    {isLoadingFromCloud ? (
+                      <div style={{ textAlign: 'center', padding: '3rem' }}>
+                        <p style={{ color: 'var(--text-secondary)' }}>正在从云端加载任务...</p>
+                        <div className="spinner" style={{ margin: '1rem auto 0' }} />
+                      </div>
+                    ) : tasks.length === 0 ? (
+                      <div style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-secondary)' }}>
+                        暂无视频记录
+                      </div>
+                    ) : (
+                      <div className="task-grid">
+                        {tasks.map(task => (
+                          <div key={task.taskId} className="task-card">
+                            <div
+                              className="task-preview"
+                              onClick={task.resultUrl ? () => handlePlayVideo(task.resultUrl) : undefined}
+                              style={task.resultUrl ? { cursor: 'pointer' } : {}}
+                              onMouseEnter={(e) => {
+                                if (!task.resultUrl) return;
+                                const video = e.currentTarget.querySelector('video');
+                                const img = e.currentTarget.querySelector('img');
+                                if (video) {
+                                  video.style.display = 'block';
+                                  if (img) img.style.display = 'none';
+                                  video.play().catch(() => {});
+                                }
+                              }}
+                              onMouseLeave={(e) => {
+                                if (!task.resultUrl) return;
+                                const video = e.currentTarget.querySelector('video');
+                                const img = e.currentTarget.querySelector('img');
+                                if (video) {
+                                  video.pause();
+                                  video.currentTime = 0.1;
+                                  if (task.previewUrl && img) {
+                                    video.style.display = 'none';
+                                    img.style.display = 'block';
+                                  }
+                                }
+                              }}
+                            >
+                              {task.resultUrl ? (
+                                <>
+                                  <video
+                                    ref={(videoEl) => {
+                                      if (videoEl && !videoEl.dataset.loaded && !task.previewUrl) {
+                                        videoEl.dataset.loaded = 'true';
+                                        videoEl.currentTime = 0.1;
+                                      }
+                                    }}
+                                    src={task.resultUrl}
+                                    muted
+                                    preload="metadata"
+                                    loop
+                                    style={{ display: task.previewUrl ? 'none' : 'block' }}
+                                    onSeeked={(e) => {
+                                      const video = e.target;
+                                      if (!task.previewUrl) {
+                                        try {
+                                          const canvas = document.createElement('canvas');
+                                          canvas.width = video.videoWidth || 720;
+                                          canvas.height = video.videoHeight || 1280;
+                                          const ctx = canvas.getContext('2d');
+                                          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                                          const thumbnail = canvas.toDataURL('image/jpeg', 0.8);
+                                          setTasks(prev => prev.map(t =>
+                                            t.taskId === task.taskId
+                                              ? { ...t, previewUrl: thumbnail }
+                                              : t
+                                          ));
+                                        } catch (err) {
+                                          console.error('生成预览图失败:', err);
+                                        }
+                                      }
+                                    }}
+                                  />
+                                  {task.previewUrl && (
+                                    <img
+                                      src={task.previewUrl}
+                                      alt={task.prompt}
+                                    />
+                                  )}
+                                  <div className="play-overlay">
+                                    ▶
+                                  </div>
+                                </>
+                              ) : (
+                                <div style={{
+                                  position: 'absolute',
+                                  top: '50%',
+                                  left: '50%',
+                                  transform: 'translate(-50%, -50%)',
+                                  textAlign: 'center',
+                                  color: 'var(--text-secondary)'
+                                }}>
+                                  <div className="spinner" style={{ margin: '0 auto 1rem' }} />
+                                  <p>{task.status}</p>
+                                </div>
+                              )}
+                            </div>
+
+                            <div className="task-info">
+                              <span className={`task-badge ${task.type === 'image-to-video' ? 'image-video' : 'video'}`}>
+                                {task.type === 'image-to-video' ? '图生视频' : '文生视频'}
+                              </span>
+                              <div className="task-id">TaskID: {task.taskId}</div>
+                              <div className="task-prompt" title={task.prompt}>{task.prompt}</div>
+                              <div className="task-meta">
+                                <span className={`task-status ${getTaskStatusClass(task.status)}`}>
+                                  {task.status}
+                                </span>
+                                <span className="task-time">
+                                  🕐 {formatDate(task.createdAt)}
+                                </span>
+                              </div>
+
+                              {task.usage && formatCost(task.usage) && (
+                                <div className="task-cost">
+                                  💰 {formatCost(task.usage)}
+                                </div>
+                              )}
+
+                              {task.progress > 0 && task.progress < 100 && (
+                                <div style={{ marginTop: '0.75rem' }}>
+                                  <div className="progress-bar">
+                                    <div
+                                      className="progress-fill"
+                                      style={{ width: `${task.progress}%` }}
+                                    />
+                                  </div>
+                                  <div style={{
+                                    fontSize: '0.75rem',
+                                    color: 'var(--text-secondary)',
+                                    marginTop: '0.25rem'
+                                  }}>
+                                    {task.progress}%
+                                  </div>
+                                </div>
+                              )}
+
+                              <div className="task-actions">
+                                {task.resultUrl && (
+                                  <>
+                                    <button
+                                      className="btn btn-small"
+                                      onClick={() => handleClone(task)}
+                                      title="克隆此任务的提示词"
+                                    >
+                                      克隆
+                                    </button>
+                                    <button
+                                      className="btn btn-secondary btn-small"
+                                      data-download={task.taskId}
+                                      onClick={() => handleDownload(task.resultUrl, task.taskId)}
+                                    >
+                                      下载
+                                    </button>
+                                  </>
+                                )}
+                                <button
+                                  className="btn btn-secondary btn-small btn-icon"
+                                  onClick={() => handleDelete(task.taskId)}
+                                  title="删除"
+                                >
+                                  ×
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* 图片内容 */}
+                {rightTab === 'image' && (
+                  <div style={{ flex: 1, overflowY: 'auto', minHeight: '400px' }}>
+                    {editTasks.length === 0 ? (
+                      <div style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-secondary)' }}>
+                        暂无图片记录
+                      </div>
+                    ) : (
+                      <div className="task-grid">
+                        {editTasks.map(task => (
+                          <div key={task.taskId} className="task-card">
+                            <div className="task-preview">
+                              {task.resultUrl ? (
+                                <img
+                                  src={task.resultUrl}
+                                  alt="结果"
+                                  style={{ width: '100%', height: '100%', objectFit: 'cover', cursor: 'pointer' }}
+                                  onClick={() => window.open(task.resultUrl, '_blank')}
+                                />
+                              ) : (
+                                <div style={{
+                                  width: '100%',
+                                  height: '100%',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  background: 'var(--bg-secondary)',
+                                  color: 'var(--text-secondary)'
+                                }}>
+                                  {task.status === 'RUNNING' ? (
+                                    <>
+                                      <div className="spinner" style={{ width: '40px', height: '40px' }} />
+                                      <div style={{ marginTop: '0.5rem', fontSize: '0.75rem' }}>生成中</div>
+                                    </>
+                                  ) : (
+                                    <span>等待中</span>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                            <div className="task-info">
+                              <span className="task-badge edit">图生图</span>
+                              <div className="task-id">TaskID: {task.taskId}</div>
+                              <div className="task-prompt" title={task.prompt}>
+                                {task.prompt.length > 30 ? task.prompt.substring(0, 30) + '...' : task.prompt}
+                              </div>
+                              <div className="task-meta">
+                                <span className={`task-status ${getTaskStatusClass(task.status)}`}>
+                                  {task.status}
+                                </span>
+                                <span className="task-time">
+                                  🕐 {formatDate(task.createdAt)}
+                                </span>
+                              </div>
+                              <div className="task-actions">
+                                {task.resultUrl && (
+                                  <button
+                                    className="btn btn-small"
+                                    onClick={() => window.open(task.resultUrl, '_blank')}
+                                    style={{ flex: 1, minWidth: 0 }}
+                                  >
+                                    下载
+                                  </button>
+                                )}
+                                <button
+                                  className="btn btn-small btn-secondary"
+                                  onClick={() => handleDeleteEditTask(task.taskId)}
+                                >
+                                  删除
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
-            )}
-          </section>
             </div>
           </div>
         </div>
