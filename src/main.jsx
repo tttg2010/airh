@@ -77,7 +77,24 @@ function App() {
   const [importing, setImporting] = useState(false);
   const [importProgress, setImportProgress] = useState({ current: 0, total: 0 });
   const [exporting, setExporting] = useState(false);
-  
+
+  // 主题状态
+  const [theme, setTheme] = useState(() => {
+    const saved = localStorage.getItem('app_theme');
+    return saved || 'light';
+  });
+
+  // 应用主题
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+    localStorage.setItem('app_theme', theme);
+  }, [theme]);
+
+  // 切换主题
+  const toggleTheme = () => {
+    setTheme(prev => prev === 'light' ? 'dark' : 'light');
+  };
+
   const pollingRef = useRef(null);
   const taskQueueRef = useRef([]);
 
@@ -1912,6 +1929,9 @@ function App() {
         <div className="header-content">
           <div className="logo">AI视频生成 <span style={{ fontSize: '0.7rem', opacity: 0.6, marginLeft: '0.5rem' }}>{APP_VERSION}</span></div>
           <div className="header-actions">
+            <button className="btn btn-icon" onClick={toggleTheme} title={theme === 'light' ? '切换到深色模式' : '切换到浅色模式'}>
+              {theme === 'light' ? '🌙' : '☀️'}
+            </button>
             <button className="btn btn-secondary btn-small" onClick={() => setShowChangelogModal(true)}>
               📝 更新日志
             </button>
