@@ -42,7 +42,20 @@ function App() {
   const [isUploading, setIsUploading] = useState(false);
   const [isGeneratingImageVideo, setIsGeneratingImageVideo] = useState(false);
   const [showImageSavedPrompts, setShowImageSavedPrompts] = useState(false);
-  
+
+  // 图生图状态
+  const [editPrompt, setEditPrompt] = useState('基于原图风格');
+  const [editResolution, setEditResolution] = useState('1k');
+  const [editAspectRatio, setEditAspectRatio] = useState('1:1');
+  const [editBatchSize, setEditBatchSize] = useState(1);
+  const [editImageFile, setEditImageFile] = useState(null);
+  const [editImageUrl, setEditImageUrl] = useState(null);
+  const [isUploadingEditImage, setIsUploadingEditImage] = useState(false);
+  const [isGeneratingEditImage, setIsGeneratingEditImage] = useState(false);
+  const [showEditSavedPrompts, setShowEditSavedPrompts] = useState(false);
+  const [editTasks, setEditTasks] = useState([]);
+  const [editTasksLoaded, setEditTasksLoaded] = useState(false);
+
   const [tasks, setTasks] = useState([]);
   const [tasksLoaded, setTasksLoaded] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -68,8 +81,8 @@ function App() {
   const pollingRef = useRef(null);
   const taskQueueRef = useRef([]);
 
-  const APP_VERSION = 'v1.6.0';
-  const LAST_DEPLOY_TIME = '2026-02-20 23:00';
+  const APP_VERSION = 'v1.7.0';
+  const LAST_DEPLOY_TIME = '2026-02-20 16:00';
 
   // CloudBase 匿名登录并加载数据
   useEffect(() => {
@@ -83,6 +96,7 @@ function App() {
           // 登录后自动加载云端任务和提示词
           await loadTasksFromCloud(user);
           await loadSavedPromptsFromCloud(user);
+          await loadEditTasksFromCloud(user);
         } else {
           await auth.signInAnonymously();
           const user = await auth.getCurrentUser();
@@ -91,6 +105,7 @@ function App() {
           // 登录后自动加载云端任务和提示词
           await loadTasksFromCloud(user);
           await loadSavedPromptsFromCloud(user);
+          await loadEditTasksFromCloud(user);
         }
       } catch (error) {
         console.error('CloudBase 登录失败:', error);
@@ -298,6 +313,369 @@ function App() {
       }
     } catch (error) {
       console.error('删除云端提示词失败:', error);
+    }
+  };
+
+  // ==================== 图生图模块函数 ====================
+
+  // 从云端加载图生图任务
+  const loadEditTasksFromCloud = async (user = cloudUser) => {
+    if (!user) {
+      console.log('CloudBase 用户未登录');
+      return;
+    }
+
+    try {
+      const result = await db.collection('edit_tasks')
+        .where({ _openid: user.uid })
+        .orderBy('createdAt', 'desc')
+        .limit(100)
+        .get();
+
+      if (result.data && result.data.length > 0) {
+        const taskMap = new Map();
+        const cloudTasks = result.data.map(doc => ({
+          ...doc,
+          _id: undefined,
+        }));
+
+        cloudTasks.forEach(task => {
+          if (!taskMap.has(task.taskId)) {
+            taskMap.set(task.taskId, task);
+          }
+        });
+
+        const uniqueTasks = Array.from(taskMap.values());
+        setEditTasks(uniqueTasks);
+        setEditTasksLoaded(true);
+      } else {
+        setEditTasks([]);
+        setEditTasksLoaded(true);
+      }
+    } catch (error) {
+      console.error('加载图生图任务失败:', error);
+      setEditTasksLoaded(true);
+    }
+  };
+
+  // 保存图生图任务到云端
+  const saveEditTaskToCloud = async (task) => {
+    if (!cloudUser) return;
+    try {
+      const taskData = {
+        ...task,
+        _openid: cloudUser.uid,
+        syncedAt: new Date().toISOString()
+      };
+
+      const existing = await db.collection('edit_tasks')
+        .where({ taskId: task.taskId })
+        .get();
+
+      if (existing.data && existing.data.length > 0) {
+        await db.collection('edit_tasks')
+          .doc(existing.data[0]._id)
+          .update(taskData);
+      } else {
+        await db.collection('edit_tasks').add(taskData);
+      }
+    } catch (error) {
+      console.error('保存图生图任务失败:', error);
+    }
+  };
+
+  // 从云端删除图生图任务
+  const deleteEditTaskFromCloud = async (taskId) => {
+    if (!cloudUser) return;
+    try {
+      const existing = await db.collection('edit_tasks')
+        .where({ taskId: taskId })
+        .get();
+
+      if (existing.data && existing.data.length > 0) {
+        await db.collection('edit_tasks')
+          .doc(existing.data[0]._id)
+          .remove();
+      }
+    } catch (error) {
+      console.error('删除图生图任务失败:', error);
+    }
+  };
+
+  // 上传图片到 RunningHub
+  const uploadEditImageToRunningHub = async (file) => {
+    const formData = new FormData();
+    formData.append('file', file);
+
+    const response = await fetch(`${API_BASE_URL}/media/upload/binary`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: formData,
+      signal: AbortSignal.timeout(60000)
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`上传失败: ${errorText}`);
+    }
+
+    const data = await response.json();
+    if (data.code !== 0) {
+      throw new Error(data.message || '上传失败');
+    }
+
+    return data.data.download_url;
+  };
+
+  // 创建图生图任务
+  const createEditTask = async (taskConfig) => {
+    try {
+      const requestBody = {
+        imageUrls: [taskConfig.imageUrl],
+        prompt: taskConfig.prompt,
+        resolution: taskConfig.resolution,
+        aspectRatio: taskConfig.aspectRatio
+      };
+
+      const response = await fetch(`${API_BASE_URL}/rhart-image-n-pro/edit`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`
+        },
+        body: JSON.stringify(requestBody),
+        signal: AbortSignal.timeout(30000)
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        let errorMessage = `HTTP错误: ${response.status}`;
+        try {
+          const errorJson = JSON.parse(errorText);
+          errorMessage = errorJson.msg || errorJson.message || errorJson.errorMessage || errorMessage;
+        } catch (e) {
+          if (errorText) errorMessage = errorText.substring(0, 100);
+        }
+        throw new Error(errorMessage);
+      }
+
+      const data = await response.json();
+
+      if (data.errorCode && data.errorCode !== '') {
+        throw new Error(`API 错误 (${data.errorCode}): ${data.errorMessage || '未知错误'}`);
+      }
+
+      if (!data.taskId) {
+        throw new Error('API未返回taskId');
+      }
+
+      const newTask = {
+        taskId: data.taskId,
+        status: data.status || 'RUNNING',
+        prompt: taskConfig.prompt,
+        resolution: taskConfig.resolution,
+        aspectRatio: taskConfig.aspectRatio,
+        type: 'image-to-image',
+        imageUrl: taskConfig.imageUrl,
+        createdAt: new Date().toISOString(),
+        progress: 0,
+        resultUrl: null,
+        retryCount: 0
+      };
+
+      setEditTasks(prev => [newTask, ...prev]);
+      await saveEditTaskToCloud(newTask);
+      showToast(`图生图任务创建成功！TaskID: ${data.taskId}`);
+      pollEditTaskStatus(newTask.taskId);
+
+    } catch (error) {
+      console.error('创建图生图任务失败:', error);
+      showToast(`任务创建失败: ${error.message}`);
+      if (editTaskQueueRef.current.length === 0) {
+        setIsGeneratingEditImage(false);
+      }
+    }
+  };
+
+  const editTaskQueueRef = useRef([]);
+
+  // 轮询图生图任务状态
+  const pollEditTaskStatus = async (taskId) => {
+    const poll = async () => {
+      try {
+        const response = await fetch(`${API_BASE_URL}/query`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`
+          },
+          body: JSON.stringify({ taskId }),
+          signal: AbortSignal.timeout(15000)
+        });
+
+        if (!response.ok) throw new Error('查询失败');
+
+        const data = await response.json();
+        const task = editTasks.find(t => t.taskId === taskId);
+        if (!task) return;
+
+        const progress = data.status === 'SUCCESS' ? 100 : data.status === 'RUNNING' ? 50 : 0;
+
+        setEditTasks(prev => prev.map(t =>
+          t.taskId === taskId
+            ? { ...t, status: data.status, progress, retryCount: 0 }
+            : t
+        ));
+
+        if (data.status === 'SUCCESS' && data.results && data.results.length > 0) {
+          const resultUrl = data.results[0].url;
+          setEditTasks(prev => prev.map(t =>
+            t.taskId === taskId
+              ? { ...t, resultUrl, progress: 100 }
+              : t
+          ));
+          await saveEditTaskToCloud({ ...task, status: 'SUCCESS', resultUrl, progress: 100 });
+          showToast('图生图生成完成！');
+        } else if (data.status === 'FAILED') {
+          showToast(`图生图任务失败: ${data.errorMessage || '未知错误'}`);
+        } else {
+          setTimeout(poll, 3000);
+        }
+      } catch (error) {
+        const task = editTasks.find(t => t.taskId === taskId);
+        if (task && task.retryCount < 3) {
+          setEditTasks(prev => prev.map(t =>
+            t.taskId === taskId ? { ...t, retryCount: t.retryCount + 1 } : t
+          ));
+          setTimeout(poll, 3000);
+        }
+      }
+    };
+    poll();
+  };
+
+  // 处理图生图生成
+  const handleGenerateEditImage = async () => {
+    if (!apiKey) {
+      setShowApiKeyModal(true);
+      return;
+    }
+
+    if (!editImageFile) {
+      showToast('请先选择图片');
+      return;
+    }
+
+    if (!editPrompt.trim()) {
+      showToast('请输入提示词');
+      return;
+    }
+
+    setIsGeneratingEditImage(true);
+    editTaskQueueRef.current = [];
+
+    try {
+      setIsUploadingEditImage(true);
+      showToast('正在上传图片...');
+      const uploadedUrl = await uploadEditImageToRunningHub(editImageFile);
+      setIsUploadingEditImage(false);
+
+      for (let i = 0; i < editBatchSize; i++) {
+        editTaskQueueRef.current.push({
+          imageUrl: uploadedUrl,
+          prompt: editPrompt,
+          resolution: editResolution,
+          aspectRatio: editAspectRatio,
+          delay: i * 1000
+        });
+      }
+
+      processEditTaskQueue();
+
+    } catch (error) {
+      console.error('图生图失败:', error);
+      showToast(`创建任务失败: ${error.message}`);
+      setIsGeneratingEditImage(false);
+    }
+  };
+
+  const processEditTaskQueue = () => {
+    let completedTasks = 0;
+    const totalTasks = editTaskQueueRef.current.length;
+
+    const processNextTask = () => {
+      if (editTaskQueueRef.current.length === 0) {
+        if (completedTasks === totalTasks) {
+          setIsGeneratingEditImage(false);
+        }
+        return;
+      }
+
+      const taskConfig = editTaskQueueRef.current.shift();
+
+      setTimeout(() => {
+        createEditTask(taskConfig);
+        completedTasks++;
+        processNextTask();
+      }, taskConfig.delay);
+    };
+
+    processNextTask();
+  };
+
+  // 处理图生图图片选择
+  const handleEditImageSelect = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    if (file.size > 10 * 1024 * 1024) {
+      showToast('图片大小不能超过 10MB');
+      return;
+    }
+
+    if (!file.type.startsWith('image/')) {
+      showToast('请选择图片文件');
+      return;
+    }
+
+    setEditImageFile(file);
+    setEditImageUrl(URL.createObjectURL(file));
+  };
+
+  // 清除图生图图片
+  const handleClearEditImage = () => {
+    setEditImageFile(null);
+    setEditImageUrl(null);
+  };
+
+  // 保存图生图提示词
+  const handleSaveEditPrompt = async () => {
+    if (!editPrompt.trim()) {
+      showToast('请先输入提示词');
+      return;
+    }
+
+    const newPrompt = {
+      id: Date.now(),
+      prompt: editPrompt.trim(),
+      type: 'image-to-image',
+      resolution: editResolution,
+      aspectRatio: editAspectRatio,
+      createdAt: new Date().toISOString()
+    };
+
+    setSavedPrompts(prev => [newPrompt, ...prev]);
+    await savePromptToCloud(newPrompt);
+    showToast('图生图提示词已保存');
+  };
+
+  // 删除图生图任务
+  const handleDeleteEditTask = async (taskId) => {
+    if (confirm('确定要删除这个图生图任务吗？')) {
+      await deleteEditTaskFromCloud(taskId);
+      setEditTasks(prev => prev.filter(task => task.taskId !== taskId));
     }
   };
 
@@ -1303,6 +1681,12 @@ function App() {
       setImageDuration(savedPrompt.duration);
       setImageAspectRatio(savedPrompt.aspectRatio);
       showToast('已应用保存的图生视频提示词');
+    } else if (savedPrompt.type === 'image-to-image') {
+      // 图生图提示词
+      setEditPrompt(savedPrompt.prompt);
+      setEditResolution(savedPrompt.resolution);
+      setEditAspectRatio(savedPrompt.aspectRatio);
+      showToast('已应用保存的图生图提示词');
     } else {
       // 文生视频提示词(默认)
       setPrompt(savedPrompt.prompt);
@@ -1320,6 +1704,17 @@ function App() {
 
   const getChangelog = () => {
     const changes = [
+      {
+        version: 'v1.7.0',
+        date: '2026-02-20',
+        changes: [
+          '🎨 新增：全能图片PRO - 图生图模块',
+          '🎨 支持风格迁移、内容替换等图片编辑功能',
+          '🎨 支持1K/2K/4K分辨率和多种画面比例',
+          '🎨 支持批量生产(1/3/5/10个)和提示词保存',
+          '☁️ 图生图任务独立存储在云端'
+        ]
+      },
       {
         version: 'v1.6.0',
         date: '2026-02-20',
@@ -1856,6 +2251,246 @@ function App() {
                 💾 保存提示词
               </button>
             </div>
+          </section>
+
+          {/* 图生图模块 */}
+          <section className="card" style={{ marginBottom: '2rem', marginTop: '1rem' }}>
+            <h2 className="section-title">全能图片PRO - 图生图</h2>
+
+            <div className="form-group">
+              <label className="label">上传原图</label>
+              <div style={{ display: 'flex', gap: '1rem', alignItems: 'flex-start' }}>
+                <div
+                  className="image-upload-area"
+                  onClick={() => document.getElementById('editImageInput').click()}
+                  style={{
+                    width: '120px',
+                    height: '120px',
+                    border: '2px dashed var(--border-color)',
+                    borderRadius: '12px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    cursor: 'pointer',
+                    overflow: 'hidden',
+                    background: editImageUrl ? 'transparent' : 'var(--bg-secondary)',
+                    position: 'relative',
+                    flexShrink: 0
+                  }}
+                >
+                  {editImageUrl ? (
+                    <>
+                      <img
+                        src={editImageUrl}
+                        alt="预览"
+                        style={{
+                          width: '100%',
+                          height: '100%',
+                          objectFit: 'cover'
+                        }}
+                      />
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleClearEditImage();
+                        }}
+                        style={{
+                          position: 'absolute',
+                          top: '4px',
+                          right: '4px',
+                          width: '24px',
+                          height: '24px',
+                          borderRadius: '50%',
+                          background: 'rgba(0,0,0,0.6)',
+                          color: 'white',
+                          border: 'none',
+                          cursor: 'pointer',
+                          fontSize: '14px',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center'
+                        }}
+                      >
+                        ×
+                      </button>
+                    </>
+                  ) : (
+                    <div style={{ textAlign: 'center', color: 'var(--text-secondary)' }}>
+                      <div style={{ fontSize: '2rem' }}>+</div>
+                      <div style={{ fontSize: '0.75rem' }}>点击上传</div>
+                    </div>
+                  )}
+                  <input
+                    id="editImageInput"
+                    type="file"
+                    accept="image/*"
+                    onChange={handleEditImageSelect}
+                    style={{ display: 'none' }}
+                  />
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div className="hint" style={{ marginBottom: '0.5rem' }}>
+                    支持 JPG、PNG 格式，最大 10MB
+                  </div>
+                  <div className="hint" style={{ color: 'var(--text-secondary)' }}>
+                    基于原图生成新图片，支持风格迁移、内容替换等
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="form-group">
+              <label className="label">提示词</label>
+              <textarea
+                className="input textarea"
+                value={editPrompt}
+                onChange={(e) => setEditPrompt(e.target.value)}
+                placeholder="描述你想要的图片效果..."
+                maxLength="4000"
+                style={{ minHeight: '80px' }}
+              />
+            </div>
+
+            <div className="form-row">
+              <div className="form-group">
+                <label className="label">分辨率</label>
+                <select
+                  className="input select"
+                  value={editResolution}
+                  onChange={(e) => setEditResolution(e.target.value)}
+                >
+                  <option value="1k">1K</option>
+                  <option value="2k">2K</option>
+                  <option value="4k">4K</option>
+                </select>
+              </div>
+
+              <div className="form-group">
+                <label className="label">画面比例</label>
+                <select
+                  className="input select"
+                  value={editAspectRatio}
+                  onChange={(e) => setEditAspectRatio(e.target.value)}
+                >
+                  <option value="1:1">1:1</option>
+                  <option value="16:9">横屏 (16:9)</option>
+                  <option value="9:16">竖屏 (9:16)</option>
+                  <option value="4:3">4:3</option>
+                  <option value="3:4">3:4</option>
+                  <option value="3:2">3:2</option>
+                  <option value="2:3">2:3</option>
+                  <option value="5:4">5:4</option>
+                  <option value="4:5">4:5</option>
+                  <option value="21:9">21:9</option>
+                </select>
+              </div>
+
+              <div className="form-group">
+                <label className="label">批量生产</label>
+                <select
+                  className="input select"
+                  value={editBatchSize}
+                  onChange={(e) => setEditBatchSize(Number(e.target.value))}
+                >
+                  <option value="1">1个</option>
+                  <option value="3">3个</option>
+                  <option value="5">5个</option>
+                  <option value="10">10个</option>
+                </select>
+              </div>
+
+              <div className="form-group" style={{ flex: '0 0 auto' }}>
+                <button
+                  className="btn"
+                  onClick={handleGenerateEditImage}
+                  disabled={isGeneratingEditImage || isUploadingEditImage || !editImageFile}
+                  style={{ minWidth: '120px' }}
+                >
+                  {isUploadingEditImage ? '上传中...' : isGeneratingEditImage ? '生成中...' : '生成图片'}
+                </button>
+              </div>
+            </div>
+
+            <div style={{ marginTop: '0.5rem', display: 'flex', gap: '0.5rem' }}>
+              <button
+                className="btn btn-secondary btn-small"
+                onClick={handleSaveEditPrompt}
+                style={{ flex: 1 }}
+              >
+                💾 保存提示词
+              </button>
+            </div>
+          </section>
+
+          {/* 图生图历史记录 */}
+          <section className="card" style={{ marginBottom: '2rem' }}>
+            <h2 className="section-title">图生图历史记录 ({editTasks.length})</h2>
+            {editTasks.length === 0 ? (
+              <div style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-secondary)' }}>
+                暂无图生图记录
+              </div>
+            ) : (
+              <div className="task-grid">
+                {editTasks.map(task => (
+                  <div key={task.taskId} className="task-card">
+                    <div className="task-preview">
+                      {task.resultUrl ? (
+                        <img
+                          src={task.resultUrl}
+                          alt="结果"
+                          style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                          onClick={() => window.open(task.resultUrl, '_blank')}
+                        />
+                      ) : (
+                        <div style={{ 
+                          width: '100%', 
+                          height: '100%', 
+                          display: 'flex', 
+                          alignItems: 'center', 
+                          justifyContent: 'center',
+                          background: 'var(--bg-secondary)',
+                          color: 'var(--text-secondary)'
+                        }}>
+                          {task.status === 'RUNNING' ? (
+                            <>
+                              <div className="spinner" style={{ width: '40px', height: '40px' }} />
+                              <div style={{ marginTop: '0.5rem', fontSize: '0.75rem' }}>生成中</div>
+                            </>
+                          ) : (
+                            <span>等待中</span>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                    <div className="task-info">
+                      <div className="task-prompt" title={task.prompt}>
+                        {task.prompt.length > 30 ? task.prompt.substring(0, 30) + '...' : task.prompt}
+                      </div>
+                      <div className="task-meta">
+                        <span>{task.resolution} • {task.aspectRatio}</span>
+                      </div>
+                      <div className="task-actions">
+                        {task.resultUrl && (
+                          <button
+                            className="btn btn-small btn-primary"
+                            onClick={() => window.open(task.resultUrl, '_blank')}
+                            style={{ flex: 1, minWidth: 0 }}
+                          >
+                            下载
+                          </button>
+                        )}
+                        <button
+                          className="btn btn-small btn-secondary"
+                          onClick={() => handleDeleteEditTask(task.taskId)}
+                        >
+                          删除
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </section>
             </div>
 
