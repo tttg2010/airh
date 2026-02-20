@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>API Key 测试工具</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      padding: 2rem;
+      background: #f5f5f7;
+      max-width: 800px;
+      margin: 0 auto;
+    }
+    h1 {
+      margin-bottom: 1.5rem;
+      color: #1d1d1f;
+    }
+    .card {
+      background: white;
+      border-radius: 16px;
+      padding: 2rem;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+      margin-bottom: 1.5rem;
+    }
+    .form-group {
+      margin-bottom: 1rem;
+    }
+    label {
+      display: block;
+      margin-bottom: 0.5rem;
+      font-weight: 500;
+      color: #86868b;
+    }
+    input, textarea {
+      width: 100%;
+      padding: 0.8rem;
+      border: 1px solid #d2d2d7;
+      border-radius: 12px;
+      font-size: 1rem;
+      font-family: monospace;
+    }
+    textarea {
+      min-height: 100px;
+      resize: vertical;
+    }
+    button {
+      background: #0071e3;
+      color: white;
+      border: none;
+      padding: 0.8rem 1.5rem;
+      border-radius: 12px;
+      font-size: 1rem;
+      cursor: pointer;
+      font-weight: 500;
+    }
+    button:hover {
+      background: #0077ed;
+    }
+    button:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+    }
+    .result {
+      margin-top: 1rem;
+      padding: 1rem;
+      border-radius: 8px;
+      font-family: monospace;
+      font-size: 0.9rem;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .success {
+      background: #e8f5e9;
+      color: #2e7d32;
+      border: 1px solid #c8e6c9;
+    }
+    .error {
+      background: #ffebee;
+      color: #c62828;
+      border: 1px solid #ffcdd2;
+    }
+    .info {
+      background: #e3f2fd;
+      color: #1565c0;
+      border: 1px solid #bbdefb;
+    }
+    .hint {
+      font-size: 0.85rem;
+      color: #86868b;
+      margin-top: 0.5rem;
+    }
+  </style>
+</head>
+<body>
+  <h1>🔑 RunningHub API Key 测试工具</h1>
+  
+  <div class="card">
+    <div class="form-group">
+      <label>API Key (32位)</label>
+      <input type="text" id="apiKey" placeholder="粘贴您的32位API Key">
+      <div class="hint" id="apiKeyHint">输入的字符数: 0/32</div>
+    </div>
+    
+    <div class="form-group">
+      <button onclick="testApiKey()" id="testBtn">测试 API Key</button>
+    </div>
+    
+    <div id="result"></div>
+  </div>
+
+  <div class="card">
+    <h2>API Key 获取步骤</h2>
+    <div style="margin-top: 1rem; line-height: 1.8; color: #1d1d1f;">
+      1. 访问 <a href="https://www.runninghub.cn" target="_blank">RunningHub 官网</a> 并登录<br>
+      2. 确保账户已充值（使用API需要余额）<br>
+      3. 在个人中心/设置中获取 API Key<br>
+      4. 确保使用的是企业级共享 API Key<br>
+      5. API Key 应该是 32 位字母数字组合
+    </div>
+  </div>
+
+    <div class="card">
+      <h2>常见错误说明</h2>
+      <div style="margin-top: 1rem; line-height: 1.8; color: #1d1d1f;">
+        <strong>TOKEN_INVALID (412)</strong>: API Key 无效或已过期<br>
+        <strong>field 'prompt' length 2 is less than 5</strong>: 提示词太短（至少5个字符）<br>
+        <strong>INSUFFICIENT_BALANCE</strong>: 账户余额不足<br>
+        <strong>NETWORK_ERROR</strong>: 网络连接失败<br>
+        <strong>CORS_ERROR</strong>: 浏览器跨域限制（需要使用代理）
+      </div>
+    </div>
+
+  <script>
+    const apiKeyInput = document.getElementById('apiKey');
+    const apiKeyHint = document.getElementById('apiKeyHint');
+    const resultDiv = document.getElementById('result');
+    const testBtn = document.getElementById('testBtn');
+
+    // 监听输入，显示字符数
+    apiKeyInput.addEventListener('input', () => {
+      const len = apiKeyInput.value.length;
+      apiKeyHint.textContent = `输入的字符数: ${len}/32`;
+      
+      if (len === 32) {
+        apiKeyHint.style.color = '#2e7d32';
+      } else if (len > 32) {
+        apiKeyHint.style.color = '#c62828';
+        apiKeyHint.textContent = `输入的字符数: ${len}/32 (超出限制)`;
+      } else {
+        apiKeyHint.style.color = '#86868b';
+      }
+    });
+
+    // 显示结果
+    function showResult(type, message) {
+      resultDiv.className = `result ${type}`;
+      resultDiv.textContent = message;
+    }
+
+    // 测试 API Key
+    async function testApiKey() {
+      const apiKey = apiKeyInput.value.trim();
+      
+      if (!apiKey) {
+        showResult('error', '请输入 API Key');
+        return;
+      }
+      
+      if (apiKey.length !== 32) {
+        showResult('error', `API Key 必须是 32 位字符，当前是 ${apiKey.length} 位`);
+        return;
+      }
+
+      testBtn.disabled = true;
+      testBtn.textContent = '测试中...';
+      showResult('info', '正在测试 API Key...');
+
+      try {
+        // 使用文档中的实际接口进行测试
+        const response = await fetch('https://www.runninghub.cn/openapi/v2/rhart-video-s/text-to-video', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`
+          },
+          body: JSON.stringify({
+            duration: '10',
+            prompt: '阳光透过高大的橡树洒在一片魔法森林中，小狐狸与会说话的蘑菇一起跳舞。画面柔和温暖，手绘动画质感，色彩明亮饱和。',
+            aspectRatio: '9:16',
+            storyboard: false
+          })
+        });
+
+        const data = await response.json();
+
+        if (response.ok) {
+          if (data.taskId) {
+            showResult('success', `✅ API Key 有效！\n\n任务ID: ${data.taskId}\n状态: ${data.status}\n\n您的 API Key 可以正常使用。`);
+            
+            // 取消测试任务
+            setTimeout(() => {
+              console.log('测试任务已创建，TaskID:', data.taskId);
+            }, 1000);
+          } else {
+            showResult('error', `响应异常: ${JSON.stringify(data, null, 2)}`);
+          }
+        } else {
+          if (data.errorCode === '1007') {
+            showResult('success', `✅ API Key 有效！\n\n虽然提示词太短导致任务失败，但说明 API Key 认证通过了。\n\n错误提示：${data.errorMessage}\n\n您的 API Key 可以正常使用，请在主应用中使用更长的提示词（至少5个字符）。`);
+          } else {
+            showResult('error', `API Key 无效或任务失败\n\n状态码: ${response.status}\n错误码: ${data.errorCode}\n错误信息: ${data.errorMessage}\n\n完整响应：${JSON.stringify(data, null, 2)}`);
+          }
+        }
+
+      } catch (error) {
+        console.error('测试失败:', error);
+        
+        if (error.message.includes('Failed to fetch')) {
+          showResult('error', `网络错误\n\n${error.message}\n\n可能原因：\n1. 网络连接问题\n2. CORS 跨域限制（浏览器安全策略）\n3. API 服务器无法访问\n\n解决方案：\n- 检查网络连接\n- 使用 Vercel/CloudBase 等平台部署（后端请求无 CORS）`);
+        } else {
+          showResult('error', `测试失败: ${error.message}`);
+        }
+      }
+
+      testBtn.disabled = false;
+      testBtn.textContent = '测试 API Key';
+    }
+
+    // 自动填充 localStorage 中的 API Key
+    window.onload = () => {
+      const savedKey = localStorage.getItem('runninghub_api_key');
+      if (savedKey) {
+        apiKeyInput.value = savedKey;
+        apiKeyHint.textContent = `输入的字符数: ${savedKey.length}/32`;
+        if (savedKey.length === 32) {
+          apiKeyHint.style.color = '#2e7d32';
+        }
+      }
+    };
+
+    // 保存 API Key 到 localStorage
+    function saveApiKey() {
+      const key = apiKeyInput.value.trim();
+      if (key.length === 32) {
+        localStorage.setItem('runninghub_api_key', key);
+        showResult('success', 'API Key 已保存');
+      }
+    }
+
+    // 添加保存按钮
+    const saveBtn = document.createElement('button');
+    saveBtn.textContent = '保存 API Key';
+    saveBtn.style.marginLeft = '0.5rem';
+    saveBtn.onclick = saveApiKey;
+    testBtn.parentNode.appendChild(saveBtn);
+  </script>
+</body>
+</html>

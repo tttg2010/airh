@@ -1,0 +1,138 @@
+name: Deploy Text-to-Video App
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  deploy-docker:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+    
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v2
+    
+    - name: Login to Docker Hub
+      uses: docker/login-action@v2
+      with:
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
+    
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v4
+      with:
+        context: .
+        push: true
+        tags: |
+          ${{ secrets.DOCKER_USERNAME }}/text-to-video:latest
+          ${{ secrets.DOCKER_USERNAME }}/text-to-video:${{ github.sha }}
+    
+    - name: Deploy notification
+      run: |
+        echo "✅ Docker 镜像已发布到 Docker Hub"
+        echo "📦 Image: ${{ secrets.DOCKER_USERNAME }}/text-to-video:latest"
+
+  deploy-github-pages:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '18'
+        cache: 'npm'
+    
+    - name: Install dependencies
+      run: npm ci
+    
+    - name: Build
+      run: npm run build
+    
+    - name: Deploy to GitHub Pages
+      uses: peaceiris/actions-gh-pages@v3
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        publish_dir: ./dist
+    
+    - name: Deploy notification
+      run: echo "✅ 已部署到 GitHub Pages"
+
+  deploy-cloudbase:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '18'
+        cache: 'npm'
+    
+    - name: Install dependencies
+      run: npm ci
+    
+    - name: Build
+      run: npm run build
+    
+    - name: Install CloudBase CLI
+      run: npm install -g @cloudbase/cli
+    
+    - name: Deploy to CloudBase
+      run: |
+        cloudbase login --apiKey ${{ secrets.TCB_SECRET_ID }} ${{ secrets.TCB_SECRET_KEY }}
+        cloudbase hosting:deploy ./dist -e ${{ secrets.TCB_ENV_ID }}
+    
+    - name: Deploy notification
+      run: |
+        echo "✅ 已部署到腾讯云 CloudBase"
+        echo "🔗 访问地址: https://${{ secrets.TCB_ENV_ID }}.service.tcloudbase.com"
+
+  deploy-gcp:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    needs: deploy-docker
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+    
+    - name: Authenticate to Google Cloud
+      uses: google-github-actions/auth@v1
+      with:
+        credentials_json: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
+    
+    - name: Setup Google Cloud SDK
+      uses: google-github-actions/setup-gcloud@v1
+    
+    - name: Deploy to Cloud Run
+      run: |
+        gcloud run deploy text-to-video \
+          --image ${{ secrets.DOCKER_USERNAME }}/text-to-video:latest \
+          --platform managed \
+          --region us-central1 \
+          --allow-unauthenticated \
+          --port 3000
+    
+    - name: Get service URL
+      id: service-url
+      run: |
+        URL=$(gcloud run services describe text-to-video \
+          --platform managed \
+          --region us-central1 \
+          --format 'value(status.url)')
+        echo "url=$URL" >> $GITHUB_OUTPUT
+    
+    - name: Deploy notification
+      run: |
+        echo "✅ 已部署到 Google Cloud Run"
+        echo "🔗 URL: ${{ steps.service-url.outputs.url }}"

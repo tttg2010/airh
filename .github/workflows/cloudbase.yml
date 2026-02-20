@@ -1,0 +1,53 @@
+name: Deploy to CloudBase
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  ENV_ID: ai-rh202602-4g44noj4b1870204
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        cache: 'npm'
+
+    - name: Install dependencies
+      run: npm ci
+
+    - name: Build project
+      run: npm run build
+
+    - name: Install CloudBase CLI
+      run: npm install -g @cloudbase/cli
+
+    - name: Login to CloudBase
+      env:
+        TCB_SECRET_ID: ${{ secrets.TCB_SECRET_ID }}
+        TCB_SECRET_KEY: ${{ secrets.TCB_SECRET_KEY }}
+      run: |
+        if [ -z "$TCB_SECRET_ID" ] || [ -z "$TCB_SECRET_KEY" ]; then
+          echo "❌ 未设置 TCB_SECRET_ID 或 TCB_SECRET_KEY"
+          echo "请在 GitHub Secrets 中配置腾讯云访问密钥"
+          exit 1
+        fi
+        cloudbase login --apiKey "$TCB_SECRET_ID" "$TCB_SECRET_KEY"
+
+    - name: Deploy to CloudBase
+      run: |
+        cloudbase hosting:deploy dist -e ${{ env.ENV_ID }}
+
+    - name: Output deployment URL
+      run: |
+        echo "✅ 部署成功！"
+        echo "📱 访问地址：https://${{ env.ENV_ID }}.service.tcloudbase.com"
