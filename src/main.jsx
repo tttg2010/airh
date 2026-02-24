@@ -111,7 +111,7 @@ function App() {
   const pollingRef = useRef(null);
   const taskQueueRef = useRef([]);
 
-  const APP_VERSION = 'v1.7.0';
+  const APP_VERSION = 'v2.0.0';
   const LAST_DEPLOY_TIME = '2026-02-20 16:00';
 
   // CloudBase 匿名登录并加载数据
@@ -1765,6 +1765,34 @@ function App() {
 
   const getChangelog = () => {
     const changes = [
+      {
+        version: 'v2.0.0',
+        date: '2026-02-24',
+        changes: [
+          '🔐 新增：用户登录功能',
+          '🔐 支持用户名密码登录',
+          '🔐 支持15天内自动登录',
+          '📐 新增：高清放大功能',
+          '📐 支持图片高清放大处理',
+          '📐 放大记录独立管理',
+          '🖼️ 新增：参考图Tab',
+          '🖼️ 支持参考图分类查看',
+          '🖼️ 优化历史记录管理体验',
+          '🔄 重构：页面布局优化',
+          '🔄 左右分栏Tab结构',
+          '🔄 全新UI设计'
+        ]
+      },
+      {
+        version: 'v1.8.0',
+        date: '2026-02-23',
+        changes: [
+          '🎨 全新UI设计',
+          '🌙 支持深色模式',
+          '🎨 优化整体视觉体验',
+          '📱 改进响应式布局'
+        ]
+      },
       {
         version: 'v1.7.0',
         date: '2026-02-20',
