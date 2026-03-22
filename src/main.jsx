@@ -69,6 +69,14 @@ function App() {
   const [cloudUser, setCloudUser] = useState(null);
   const [isLoadingFromCloud, setIsLoadingFromCloud] = useState(false);
   const [lastSyncTime, setLastSyncTime] = useState(null);
+
+  // 登录状态
+  const [showLoginModal, setShowLoginModal] = useState(false);
+  const [loginUsername, setLoginUsername] = useState('');
+  const [loginPassword, setLoginPassword] = useState('');
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [loginError, setLoginError] = useState('');
+  const [rememberMe, setRememberMe] = useState(false);
   
   // 导入导出状态
   const [showImportModal, setShowImportModal] = useState(false);
@@ -143,6 +151,101 @@ function App() {
     };
     initCloudBase();
   }, []);
+
+  // 检查自动登录
+  useEffect(() => {
+    const checkAutoLogin = async () => {
+      const savedUser = localStorage.getItem('app_user');
+      const savedTime = localStorage.getItem('app_user_time');
+      if (savedUser && savedTime) {
+        const days = (Date.now() - parseInt(savedTime)) / (1000 * 60 * 60 * 24);
+        if (days <= 15) {
+          try {
+            const userData = JSON.parse(savedUser);
+            // 验证用户是否仍然有效
+            const result = await db.collection('users')
+              .where({ _openid: userData.uid })
+              .get();
+            if (result.data && result.data.length > 0) {
+              setCloudUser(userData);
+              console.log('✅ 自动登录成功:', userData.uid);
+              await loadTasksFromCloud(userData);
+              await loadSavedPromptsFromCloud(userData);
+              await loadEditTasksFromCloud(userData);
+              return;
+            }
+          } catch (e) {
+            console.log('自动登录验证失败:', e);
+          }
+        }
+      }
+      // 需要显示登录界面
+      setShowLoginModal(true);
+    };
+    checkAutoLogin();
+  }, []);
+
+  // 登录函数
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    setIsLoggingIn(true);
+    setLoginError('');
+
+    try {
+      // 从数据库验证用户凭据
+      const result = await db.collection('users')
+        .where({ username: loginUsername })
+        .get();
+
+      if (result.data && result.data.length > 0) {
+        const user = result.data[0];
+        if (user.password === loginPassword) {
+          // 登录成功
+          const userData = {
+            uid: user._openid || user.username,
+            username: user.username,
+            user_metadata: { username: user.username }
+          };
+          setCloudUser(userData);
+
+          // 保存登录状态
+          if (rememberMe) {
+            localStorage.setItem('app_user', JSON.stringify(userData));
+            localStorage.setItem('app_user_time', Date.now().toString());
+          }
+
+          showToast('登录成功！');
+          setShowLoginModal(false);
+
+          // 加载用户数据
+          await loadTasksFromCloud(userData);
+          await loadSavedPromptsFromCloud(userData);
+          await loadEditTasksFromCloud(userData);
+        } else {
+          setLoginError('密码错误');
+        }
+      } else {
+        setLoginError('用户名不存在');
+      }
+    } catch (error) {
+      console.error('登录失败:', error);
+      setLoginError('登录失败，请稍后重试');
+    } finally {
+      setIsLoggingIn(false);
+    }
+  };
+
+  // 登出函数
+  const handleLogout = () => {
+    setCloudUser(null);
+    localStorage.removeItem('app_user');
+    localStorage.removeItem('app_user_time');
+    setTasks([]);
+    setEditTasks([]);
+    setSavedPrompts([]);
+    showToast('已退出登录');
+    setShowLoginModal(true);
+  };
 
   // 从云端加载任务
   const loadTasksFromCloud = async (user = cloudUser) => {
@@ -1767,20 +1870,15 @@ function App() {
     const changes = [
       {
         version: 'v2.0.0',
-        date: '2026-02-24',
+        date: '2026-03-22',
         changes: [
           '🔐 新增：用户登录功能',
+          '🔐 用户名密码从云端数据库获取',
           '🔐 支持用户名密码登录',
           '🔐 支持15天内自动登录',
-          '📐 新增：高清放大功能',
-          '📐 支持图片高清放大处理',
-          '📐 放大记录独立管理',
-          '🖼️ 新增：参考图Tab',
-          '🖼️ 支持参考图分类查看',
           '🖼️ 优化历史记录管理体验',
-          '🔄 重构：页面布局优化',
-          '🔄 左右分栏Tab结构',
-          '🔄 全新UI设计'
+          '💾 提示词保存在各自账户里面',
+          '💾 生成的任务ID、提示词、视频和图片URL保存到数据库'
         ]
       },
       {
@@ -1982,6 +2080,15 @@ function App() {
             <button className="btn btn-small" onClick={() => setShowApiKeyModal(true)}>
               🔑 API Key
             </button>
+            {cloudUser ? (
+              <button className="btn btn-secondary btn-small" onClick={handleLogout}>
+                👤 {cloudUser.user_metadata?.username || cloudUser.uid.substring(0, 8)}
+              </button>
+            ) : (
+              <button className="btn btn-small" onClick={() => setShowLoginModal(true)}>
+                🔐 登录
+              </button>
+            )}
           </div>
         </div>
       </header>
@@ -3205,6 +3312,66 @@ function App() {
                 关闭
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {showLoginModal && (
+        <div className="modal">
+          <div className="modal-content" onClick={e => e.stopPropagation()}>
+            <h2 className="modal-header">登录</h2>
+
+            <form onSubmit={handleLogin}>
+              <div style={{ marginBottom: '1rem' }}>
+                <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 500 }}>用户名</label>
+                <input
+                  type="text"
+                  className="input"
+                  value={loginUsername}
+                  onChange={(e) => setLoginUsername(e.target.value)}
+                  placeholder="请输入用户名"
+                  required
+                  style={{ width: '100%', padding: '0.75rem', borderRadius: '8px', border: '1px solid var(--border-color)', background: 'var(--bg-color)', color: 'var(--text-color)' }}
+                />
+              </div>
+
+              <div style={{ marginBottom: '1rem' }}>
+                <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 500 }}>密码</label>
+                <input
+                  type="password"
+                  className="input"
+                  value={loginPassword}
+                  onChange={(e) => setLoginPassword(e.target.value)}
+                  placeholder="请输入密码"
+                  required
+                  style={{ width: '100%', padding: '0.75rem', borderRadius: '8px', border: '1px solid var(--border-color)', background: 'var(--bg-color)', color: 'var(--text-color)' }}
+                />
+              </div>
+
+              <div style={{ marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <input
+                  type="checkbox"
+                  id="rememberMe"
+                  checked={rememberMe}
+                  onChange={(e) => setRememberMe(e.target.checked)}
+                />
+                <label htmlFor="rememberMe" style={{ cursor: 'pointer' }}>15天内自动登录</label>
+              </div>
+
+              {loginError && (
+                <div style={{ color: '#ff4444', marginBottom: '1rem', padding: '0.5rem', background: 'rgba(255,68,68,0.1)', borderRadius: '8px' }}>
+                  {loginError}
+                </div>
+              )}
+
+              <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '1rem' }}>
+                💡 请在 CloudBase 控制台手动创建用户
+              </p>
+
+              <button type="submit" className="btn" disabled={isLoggingIn} style={{ width: '100%' }}>
+                {isLoggingIn ? '登录中...' : '登录'}
+              </button>
+            </form>
           </div>
         </div>
       )}
