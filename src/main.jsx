@@ -155,18 +155,31 @@ function App() {
   // 检查自动登录
   useEffect(() => {
     const checkAutoLogin = async () => {
-      const savedUser = localStorage.getItem('app_user');
-      const savedTime = localStorage.getItem('app_user_time');
-      if (savedUser && savedTime) {
-        const days = (Date.now() - parseInt(savedTime)) / (1000 * 60 * 60 * 24);
-        if (days <= 15) {
-          try {
+      try {
+        // 检查 CloudBase 是否已登录
+        const loginState = await auth.getLoginState();
+        if (loginState) {
+          const user = await auth.getCurrentUser();
+          console.log('CloudBase 已登录:', user?.uid);
+          setCloudUser({
+            uid: user.uid,
+            username: user.user_metadata?.username || user.name,
+            user_metadata: user.user_metadata
+          });
+          await loadTasksFromCloud(user);
+          await loadSavedPromptsFromCloud(user);
+          await loadEditTasksFromCloud(user);
+          return;
+        }
+
+        // 检查本地存储的自动登录
+        const savedUser = localStorage.getItem('app_user');
+        const savedTime = localStorage.getItem('app_user_time');
+        if (savedUser && savedTime) {
+          const days = (Date.now() - parseInt(savedTime)) / (1000 * 60 * 60 * 24);
+          if (days <= 15) {
             const userData = JSON.parse(savedUser);
-            // 验证用户是否仍然有效
-            const result = await db.collection('users')
-              .where({ _openid: userData.uid })
-              .get();
-            if (result.data && result.data.length > 0) {
+            if (userData.uid) {
               setCloudUser(userData);
               console.log('✅ 自动登录成功:', userData.uid);
               await loadTasksFromCloud(userData);
@@ -174,10 +187,10 @@ function App() {
               await loadEditTasksFromCloud(userData);
               return;
             }
-          } catch (e) {
-            console.log('自动登录验证失败:', e);
           }
         }
+      } catch (e) {
+        console.log('自动登录检查失败:', e);
       }
       // 需要显示登录界面
       setShowLoginModal(true);
@@ -192,44 +205,50 @@ function App() {
     setLoginError('');
 
     try {
-      // 从数据库验证用户凭据
-      const result = await db.collection('users')
-        .where({ username: loginUsername })
-        .get();
+      // 使用 CloudBase 用户名密码登录
+      console.log('尝试登录，用户名:', loginUsername);
 
-      if (result.data && result.data.length > 0) {
-        const user = result.data[0];
-        if (user.password === loginPassword) {
-          // 登录成功
-          const userData = {
-            uid: user._openid || user.username,
-            username: user.username,
-            user_metadata: { username: user.username }
-          };
-          setCloudUser(userData);
+      const { data, error } = await auth.signInWithPassword({
+        username: loginUsername,
+        password: loginPassword
+      });
 
-          // 保存登录状态
-          if (rememberMe) {
-            localStorage.setItem('app_user', JSON.stringify(userData));
-            localStorage.setItem('app_user_time', Date.now().toString());
-          }
-
-          showToast('登录成功！');
-          setShowLoginModal(false);
-
-          // 加载用户数据
-          await loadTasksFromCloud(userData);
-          await loadSavedPromptsFromCloud(userData);
-          await loadEditTasksFromCloud(userData);
-        } else {
-          setLoginError('密码错误');
-        }
-      } else {
-        setLoginError('用户名不存在');
+      if (error) {
+        console.error('登录失败:', error);
+        setLoginError(error.message || '用户名或密码错误');
+        return;
       }
+
+      console.log('登录成功:', data);
+
+      // 获取用户信息
+      const user = await auth.getCurrentUser();
+      console.log('当前用户:', user);
+
+      // 只存储必要的用户信息（避免循环引用）
+      const userInfo = {
+        uid: user.uid,
+        username: user.user_metadata?.username || user.name,
+        user_metadata: user.user_metadata
+      };
+
+      setCloudUser(userInfo);
+
+      if (rememberMe) {
+        localStorage.setItem('app_user', JSON.stringify(userInfo));
+        localStorage.setItem('app_user_time', Date.now().toString());
+      }
+
+      showToast('登录成功！');
+      setShowLoginModal(false);
+
+      await loadTasksFromCloud(userInfo);
+      await loadSavedPromptsFromCloud(userInfo);
+      await loadEditTasksFromCloud(userInfo);
     } catch (error) {
       console.error('登录失败:', error);
-      setLoginError('登录失败，请稍后重试');
+      console.error('错误详情:', error.message);
+      setLoginError('登录失败，请稍后重试: ' + (error.message || ''));
     } finally {
       setIsLoggingIn(false);
     }

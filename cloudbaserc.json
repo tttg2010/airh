@@ -1,9 +1,20 @@
 {
-  "envId": "your-env-id",
+  "envId": "ai-rh202602-4g44noj4b1870204",
   "version": "2.0",
   "$schema": "https://framework-1258016615.tcloudbaseapp.com/schema/latest.json",
   "framework": {
     "name": "text-to-video-app",
-    "plugins": {}
+    "plugins": {},
+    "functions": {
+      "verify-user": {
+        "handler": "index.main",
+        "name": "verify-user",
+        "config": {
+          "timeout": 10,
+          "memory": 256,
+          "runtime": "Nodejs10.15"
+        }
+      }
+    }
   }
 }
