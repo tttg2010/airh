@@ -5,7 +5,6 @@ import './index.css';
 
 const API_BASE_URL = 'https://www.runninghub.cn/openapi/v2';
 const DEFAULT_API_KEY = import.meta.env.RUNNINGHUB_API_KEY || '';
-const YIJIA_API_KEY = import.meta.env.YIJIA_API_KEY || '';
 const CLOUDBASE_ENV = 'ai-rh202602-4g44noj4b1870204';
 
 // 初始化 CloudBase
@@ -98,20 +97,7 @@ function App() {
   const [leftMainTab, setLeftMainTab] = useState('video');
 
   // 视频生成Tab下的功能选择
-  const [videoFunction, setVideoFunction] = useState('text-to-video'); // text-to-video | image-to-video | sora-yijia
-
-  // YIJIA 视频生成状态
-  const [yijiaApiKey, setYijiaApiKey] = useState(() => {
-    const stored = localStorage.getItem('yijia_api_key');
-    if (stored) return stored;
-    return YIJIA_API_KEY;
-  });
-  const [yijiaPrompt, setYijiaPrompt] = useState('');
-  const [yijiaModel, setYijiaModel] = useState('sora-2-yijia');
-  const [yijiaImageUrl, setYijiaImageUrl] = useState('');
-  const [yijiaDuration, setYijiaDuration] = useState('5');
-  const [yijiaAspectRatio, setYijiaAspectRatio] = useState('9:16');
-  const [isGeneratingYijia, setIsGeneratingYijia] = useState(false);
+  const [videoFunction, setVideoFunction] = useState('text-to-video'); // text-to-video | image-to-video
 
   // 图片生成Tab下的功能选择
   const [imageFunction, setImageFunction] = useState('image-to-image'); // image-to-image
@@ -123,6 +109,18 @@ function App() {
   // 批量选择状态
   const [selectedTasks, setSelectedTasks] = useState([]); // 选中的任务ID列表
   const [selectAllLoading, setSelectAllLoading] = useState(false);
+  // 分页状态
+  const [currentPage, setCurrentPage] = useState(1);
+  const [itemsPerPage] = useState(20);
+  // 排序状态
+  const [sortOrder, setSortOrder] = useState('desc'); // desc | asc
+  // 筛选状态
+  const [videoFilter, setVideoFilter] = useState('all'); // all | text-to-video | image-to-video
+  // 已下载视频状态
+  const [downloadedTasks, setDownloadedTasks] = useState(() => {
+    const saved = localStorage.getItem('downloaded_tasks');
+    return saved ? JSON.parse(saved) : [];
+  });
 
   // 其他状态...
   useEffect(() => {
@@ -294,43 +292,136 @@ function App() {
     
     setIsLoadingFromCloud(true);
     try {
+      // ⚠️ 临时诊断：不带 _openid 过滤，查询云端所有记录（需要安全规则允许）
+      let allTaskIds = [];
+      let allOpenids = [];
+      let totalInCloud = 0;
+      
+      try {
+        // 分批查询获取所有数据
+        const BATCH_SIZE = 1000;
+        let skip = 0;
+        let hasMore = true;
+        
+        while (hasMore) {
+          const batchResult = await db.collection('video_tasks')
+            .skip(skip)
+            .limit(BATCH_SIZE)
+            .get();
+          
+          if (batchResult.data && batchResult.data.length > 0) {
+            totalInCloud += batchResult.data.length;
+            allTaskIds = [...allTaskIds, ...batchResult.data.map(d => d.taskId).filter(t => t)];
+            allOpenids = [...allOpenids, ...batchResult.data.map(d => d._openid).filter(o => o)];
+            skip += BATCH_SIZE;
+            hasMore = batchResult.data.length === BATCH_SIZE;
+          } else {
+            hasMore = false;
+          }
+        }
+        
+        console.log('========== 云端诊断信息 ==========');
+        console.log('云端总记录数（近似）:', totalInCloud);
+        
+        // 统计唯一 _openid
+        const uniqueOpenids = [...new Set(allOpenids)];
+        console.log('唯一 _openid 数量:', uniqueOpenids.length);
+        console.log('_openid 列表:', uniqueOpenids);
+        
+        // 统计唯一 taskId
+        const uniqueTaskIds = [...new Set(allTaskIds)];
+        console.log('唯一 taskId 数量:', uniqueTaskIds.length);
+        console.log('taskId 列表（前20个）:', uniqueTaskIds.slice(0, 20));
+        
+        // 按 _openid 分组
+        const byOpenid = {};
+        allOpenids.forEach(o => {
+          byOpenid[o] = (byOpenid[o] || 0) + 1;
+        });
+        console.log('按 _openid 分组:', byOpenid);
+        console.log('==================================');
+        
+        // 如果有其他用户的数据，提示用户
+        if (uniqueOpenids.length > 1 && !uniqueOpenids.includes(user.uid)) {
+          showToast(`⚠️ 发现其他用户的数据！请联系管理员`);
+        }
+      } catch (e) {
+        console.log('无权限查询所有数据:', e.message);
+      }
+      
+      // 正式查询：使用用户 UID，增加 limit 到 10000
       const result = await db.collection('video_tasks')
         .where({ _openid: user.uid })
-        .orderBy('createdAt', 'desc')
-        .limit(100)
+        .limit(10000)
         .get();
+      
+      console.log('=== CloudBase 查询诊断 ===');
+      console.log('查询条件 _openid:', user.uid);
+      console.log('请求 limit: 5000');
+      console.log('返回 data 长度:', result.data?.length);
+      console.log('返回 total:', result.total);
+      console.log('返回 list:', result.list); // 某些SDK版本可能用list
+      console.log('=========================');
       
       if (result.data && result.data.length > 0) {
         console.log(`从云端获取到 ${result.data.length} 条记录`);
         
-        // 直接使用云端数据,并去重(相同 taskId 只保留一个)
-        const taskMap = new Map();
-        const cloudTasks = result.data.map(doc => {
+        // 详细分析每条记录
+        const validTasks = [];
+        const invalidTasks = [];
+        
+        result.data.forEach((doc, index) => {
           const task = {
             ...doc,
-            _id: undefined, // 移除 CloudBase 的 _id
+            _id: undefined,
           };
-          console.log(`云端任务 ${task.taskId} 的提示词:`, task.prompt);
-          return task;
+          
+          // 检查 taskId 有效性
+          if (!task.taskId || typeof task.taskId !== 'string') {
+            invalidTasks.push({ index, reason: '无效taskId', task });
+            return;
+          }
+          
+          validTasks.push(task);
         });
         
-        // 去重:相同 taskId 的任务,保留最新的一个
-        cloudTasks.forEach(task => {
+        console.log(`有效任务: ${validTasks.length} 条`);
+        console.log(`无效任务: ${invalidTasks.length} 条`);
+        
+        // 查看原始数据中的所有唯一taskId
+        const rawTaskIds = [...new Set(result.data.map(d => d.taskId))];
+        console.log(`原始数据中唯一taskId: ${rawTaskIds.length} 个`);
+        console.log('taskId列表:', rawTaskIds.slice(0, 20)); // 只显示前20个
+        
+        if (invalidTasks.length > 0) {
+          console.log('无效任务示例:', invalidTasks.slice(0, 3));
+        }
+        
+        // 按 taskId 去重，保留第一个（最新的）
+        const taskMap = new Map();
+        validTasks.forEach(task => {
           if (!taskMap.has(task.taskId)) {
             taskMap.set(task.taskId, task);
           }
         });
-        
         const uniqueTasks = Array.from(taskMap.values());
-        console.log(`去重后有 ${uniqueTasks.length} 条记录`);
         
-        setTasks(uniqueTasks);
+        // 按创建时间排序，并添加唯一 key
+        const sortedTasks = uniqueTasks.map((task, index) => ({
+          ...task,
+          _uniqueKey: `${task.taskId}_${index}` // 添加唯一 key
+        })).sort((a, b) => {
+          return new Date(b.createdAt || 0) - new Date(a.createdAt || 0);
+        });
+        
+        console.log(`去重后任务数: ${sortedTasks.length}`);
+        
+        setTasks(sortedTasks);
         setTasksLoaded(true);
         setLastSyncTime(new Date().toLocaleString('zh-CN'));
         
-        if (tasksLoaded) {
-          showToast(`已从云端加载 ${uniqueTasks.length} 条记录`);
-        }
+        // 显示详细加载结果
+        showToast(`云端: ${result.data.length}条 → 去重后: ${sortedTasks.length}个任务`);
       } else {
         console.log('云端暂无数据');
         setTasks([]);
@@ -352,30 +443,43 @@ function App() {
     showToast('任务已自动保存到云端，无需手动同步');
   };
 
-  // 保存单个任务到云端
-  const saveTaskToCloud = async (task) => {
+  // 保存单个任务到云端（避免重复保存）
+  const saveTaskToCloud = async (task, forceUpdate = false) => {
     if (!cloudUser) return;
     
     try {
+      // 检查是否存在相同的 taskId 记录
+      const existing = await db.collection('video_tasks')
+        .where({ taskId: task.taskId })
+        .get();
+      
       const taskData = {
         ...task,
         _openid: cloudUser.uid,
         syncedAt: new Date().toISOString()
       };
       
-      console.log(`准备同步任务到云端 ${task.taskId}, 包含字段:`, Object.keys(taskData));
-      console.log(`任务提示词:`, taskData.prompt);
-      
-      const existing = await db.collection('video_tasks')
-        .where({ taskId: task.taskId })
-        .get();
-      
       if (existing.data && existing.data.length > 0) {
+        // 存在相同 taskId，检查是否需要更新
+        const existingRecord = existing.data[0];
+        
+        // 如果不是强制更新，且现有记录的 createdAt 或 syncedAt 比当前数据新，则跳过
+        if (!forceUpdate && existingRecord.createdAt && task.createdAt) {
+          const existingTime = new Date(existingRecord.createdAt).getTime();
+          const currentTime = new Date(task.createdAt).getTime();
+          if (existingTime >= currentTime) {
+            console.log(`任务 ${task.taskId} 云端已有更新或相同的数据，跳过保存`);
+            return;
+          }
+        }
+        
+        // 更新现有记录
         await db.collection('video_tasks')
-          .doc(existing.data[0]._id)
+          .doc(existingRecord._id)
           .update(taskData);
-        console.log(`任务 ${task.taskId} 已更新到云端`);
+        console.log(`任务 ${task.taskId} 已更新到云端 (forced: ${forceUpdate})`);
       } else {
+        // 新增记录
         await db.collection('video_tasks').add(taskData);
         console.log(`任务 ${task.taskId} 已新增到云端`);
       }
@@ -414,8 +518,7 @@ function App() {
     try {
       const result = await db.collection('saved_prompts')
         .where({ _openid: user.uid })
-        .orderBy('createdAt', 'desc')
-        .limit(100)
+        .limit(500)
         .get();
       
       if (result.data && result.data.length > 0) {
@@ -425,7 +528,9 @@ function App() {
           ...doc,
           _id: undefined,
           _openid: undefined
-        }));
+        })).sort((a, b) => {
+          return new Date(b.createdAt || 0) - new Date(a.createdAt || 0);
+        });
         
         setSavedPrompts(cloudPrompts);
         console.log(`已加载 ${cloudPrompts.length} 条保存的提示词`);
@@ -499,8 +604,7 @@ function App() {
     try {
       const result = await db.collection('edit_tasks')
         .where({ _openid: user.uid })
-        .orderBy('createdAt', 'desc')
-        .limit(100)
+        .limit(500)
         .get();
 
       if (result.data && result.data.length > 0) {
@@ -516,7 +620,9 @@ function App() {
           }
         });
 
-        const uniqueTasks = Array.from(taskMap.values());
+        const uniqueTasks = Array.from(taskMap.values()).sort((a, b) => {
+          return new Date(b.createdAt || 0) - new Date(a.createdAt || 0);
+        });
         setEditTasks(uniqueTasks);
         setEditTasksLoaded(true);
       } else {
@@ -1076,22 +1182,14 @@ function App() {
       task.status === 'RUNNING' || 
       task.status === 'QUEUED' || 
       task.status === '获取结果中...' ||
-      task.status === '网络中断，正在重试...' ||
-      task.status === 'processing' ||
-      task.status === 'queued' ||
-      task.status === 'pending'
+      task.status === '网络中断，正在重试...'
     );
     
     if (pendingTasks.length > 0) {
       console.log(`发现 ${pendingTasks.length} 个未完成任务，开始重新查询状态`);
       pendingTasks.forEach(task => {
         console.log(`重新查询任务: ${task.taskId}, 类型: ${task.type}, 状态: ${task.status}`);
-        if (task.type === 'sora-yijia') {
-          // YIJIA 任务用专门的轮询函数
-          pollYijiaTaskStatus(task.taskId, task.id, task.model);
-        } else {
-          pollTaskStatus(task.taskId);
-        }
+        pollTaskStatus(task.taskId);
       });
     }
   }, [tasksLoaded]);
@@ -1586,6 +1684,13 @@ function App() {
       
       window.URL.revokeObjectURL(blobUrl);
       
+      // 标记为已下载
+      if (!downloadedTasks.includes(taskId)) {
+        const newDownloaded = [...downloadedTasks, taskId];
+        setDownloadedTasks(newDownloaded);
+        localStorage.setItem('downloaded_tasks', JSON.stringify(newDownloaded));
+      }
+      
       showToast('下载成功');
     } catch (error) {
       console.error('下载失败:', error);
@@ -1912,293 +2017,6 @@ function App() {
     setImageUrl(null);
   };
 
-  // YIJIA 视频生成
-  const handleGenerateYijia = async () => {
-    if (!yijiaApiKey) {
-      showToast('请先配置 YIJIA API Key');
-      return;
-    }
-
-    if (!yijiaPrompt.trim()) {
-      showToast('请输入视频描述');
-      return;
-    }
-
-    setIsGeneratingYijia(true);
-
-    try {
-      // 判断是否为 yijia 模型
-      const isYijiaModel = yijiaModel.includes('-yijia');
-      
-      // 根据模型类型构建不同的请求体
-      let requestBody;
-      let apiUrl;
-      
-      if (isYijiaModel) {
-        // yijia 模型
-        requestBody = {
-          model: yijiaModel,
-          prompt: yijiaPrompt.trim(),
-          size: yijiaApiKey // yijia 模型 size 传 API Key
-        };
-        apiUrl = 'https://ai.yijiarj.cn/v1/videos';
-      } else {
-        // 非 yijia 模型
-        // 解析比例得到分辨率
-        const resolutionMap = {
-          '9:16': '720x1280',
-          '16:9': '1280x720',
-          '1:1': '720x720'
-        };
-        requestBody = {
-          model: yijiaModel,
-          prompt: yijiaPrompt.trim(),
-          size: resolutionMap[yijiaAspectRatio] || '720x1280',
-          seconds: yijiaDuration,
-          watermark: false,
-          private: false
-        };
-        apiUrl = 'https://api.yijiarj.cn/v1/videos'; // 非 yijia 模型走大带宽线路
-      }
-
-      // 如果有图片 URL，添加到请求中（图生视频模式）
-      if (yijiaImageUrl.trim()) {
-        requestBody.input_reference = yijiaImageUrl.trim();
-      }
-
-      console.log('YIJIA 请求体:', requestBody);
-      console.log('API URL:', apiUrl);
-
-      const response = await fetch(apiUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${yijiaApiKey}`
-        },
-        body: JSON.stringify(requestBody),
-        signal: AbortSignal.timeout(30000)
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        let errorMessage = `HTTP错误: ${response.status}`;
-        try {
-          const errorJson = JSON.parse(errorText);
-          errorMessage = errorJson.message || errorJson.msg || errorMessage;
-        } catch (e) {
-          if (errorText) {
-            errorMessage = errorText.substring(0, 100);
-          }
-        }
-        throw new Error(errorMessage);
-      }
-
-      const result = await response.json();
-      console.log('YIJIA 响应状态:', response.status);
-      console.log('YIJIA 响应:', result);
-      console.log('YIJIA 响应 keys:', Object.keys(result));
-      console.log('YIJIA 响应完整内容:', JSON.stringify(result));
-
-      // 检查是否有错误
-      if (result.error) {
-        throw new Error(result.error.message || result.error || '创建任务失败');
-      }
-
-      // 根据新 API 格式解析响应 - 同时支持 id 和 task_id
-      const taskId = result.id || result.task_id;
-      if (taskId) {
-        showToast(`任务已创建，TaskID: ${taskId}`);
-
-        // 保存到本地任务列表
-        const newTask = {
-          id: Date.now(),
-          taskId: taskId,
-          taskIdStr: String(taskId),
-          prompt: yijiaPrompt.trim(),
-          type: 'sora-yijia',
-          status: result.status || 'queued',
-          model: yijiaModel,
-          yijiaTaskId: result.task_id || result.id, // 保存原始 task_id
-          imageUrl: yijiaImageUrl.trim() || null,
-          createdAt: new Date().toISOString(),
-          resultUrl: null,
-          previewUrl: null
-        };
-
-        setTasks(prev => [newTask, ...prev]);
-
-        // 保存到云端
-        if (cloudUser) {
-          await saveTaskToCloud(newTask);
-        }
-
-        // 开始轮询任务状态
-        pollYijiaTaskStatus(taskId, newTask.id, yijiaModel);
-      } else {
-        throw new Error(result.message || '创建任务失败');
-      }
-
-    } catch (error) {
-      console.error('YIJIA 视频生成失败:', error);
-      let errorMsg = error.message;
-      if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
-        errorMsg = '网络连接失败，请检查网络';
-      }
-      showToast(`创建任务失败: ${errorMsg}`);
-    }
-  };
-
-  // 轮询 YIJIA 任务状态
-  const pollYijiaTaskStatus = async (taskId, localTaskId, model) => {
-    let retries = 0;
-    let isCompleted = false; // 标记任务是否已完成，防止重复处理
-    const maxRetries = 120; // 最多轮询 120 次（10分钟）
-    
-    // 根据模型判断是否为 yijia 模型
-    const isYijiaModel = model && model.includes('-yijia');
-    const statusApiUrl = isYijiaModel ? 'https://ai.yijiarj.cn' : 'https://api.yijiarj.cn';
-
-    const poll = async () => {
-      // 如果已经完成，直接停止轮询
-      if (isCompleted) {
-        console.log('任务已完成，停止轮询');
-        return;
-      }
-
-      try {
-        const response = await fetch(`${statusApiUrl}/v1/videos/${taskId}`, {
-          method: 'GET',
-          headers: {
-            'Authorization': `Bearer ${yijiaApiKey}`
-          },
-          signal: AbortSignal.timeout(15000)
-        });
-
-        if (!response.ok) {
-          throw new Error(`HTTP错误: ${response.status}`);
-        }
-
-        const result = await response.json();
-        console.log('YIJIA 任务状态:', result);
-        console.log('YIJIA 任务状态完整:', JSON.stringify(result));
-
-        // 根据新 API 格式解析响应
-        if (result.id) {
-          const taskData = result;
-          const isFinalStatus = taskData.status === 'completed' || taskData.status === 'failed' || taskData.status === 'error';
-          
-          // 更新本地任务状态
-          console.log('轮询 - 查找任务 localTaskId:', localTaskId);
-          setTasks(prev => {
-            const found = prev.find(t => t.id === localTaskId);
-            console.log('轮询 - 找到任务:', found ? found.taskId : '未找到');
-            
-            // 如果已经是最终状态，跳过更新
-            if (isFinalStatus && found && (found.status === 'completed' || found.status === 'failed')) {
-              console.log('任务状态已是最终状态，跳过更新');
-              return prev;
-            }
-            
-            return prev.map(task => {
-              if (task.id === localTaskId) {
-                console.log('轮询 - 更新任务状态:', taskData.status);
-                const updatedTask = { ...task };
-                
-                // 新 API 状态: queued, processing, completed, failed, error
-                console.log('任务完成检查 - status:', taskData.status, 'url:', taskData.url, 'size:', taskData.size);
-                if (taskData.status === 'completed') {
-                  console.log('任务完成 - 设置视频URL:', taskData.url, '缩略图:', taskData.size);
-                  // 检查是否违规
-                  if (taskData.quality && taskData.quality !== 'standard') {
-                    updatedTask.status = 'failed';
-                    updatedTask.error = `内容违规: ${taskData.quality}`;
-                    showToast(`生成失败: 内容违规`);
-                  } else {
-                    updatedTask.status = 'completed';
-                    // url 是无水印视频
-                    updatedTask.resultUrl = taskData.url || null;
-                    // size 可能是 URL 或分辨率字符串，如果是 URL 则用它作为缩略图
-                    updatedTask.previewUrl = taskData.size && taskData.size.startsWith('http') ? taskData.size : null;
-                    showToast('视频生成成功！');
-                  }
-                  setIsGeneratingYijia(false);
-                } else if (taskData.status === 'error' || taskData.status === 'failed') {
-                  updatedTask.status = 'failed';
-                  updatedTask.error = taskData.error || taskData.quality || '生成失败';
-                  showToast(`生成失败: ${updatedTask.error}`);
-                  setIsGeneratingYijia(false);
-                } else if (taskData.status === 'processing') {
-                  updatedTask.status = 'processing';
-                  // 继续轮询
-                } else if (taskData.status === 'queued') {
-                  updatedTask.status = 'pending';
-                  // 继续轮询
-                }
-                
-                return updatedTask;
-              }
-              return task;
-            });
-          }); // 关闭 setTasks 回调
-          
-          // 如果是最终状态，标记为已完成并同步到云端
-          if (isFinalStatus && !isCompleted) {
-            isCompleted = true;
-            // 使用 setTasks 获取最新状态后同步
-            setTimeout(() => {
-              setTasks(prev => {
-                const task = prev.find(t => t.id === localTaskId);
-                if (task && cloudUser) {
-                  saveTaskToCloud({ ...task, status: taskData.status === 'completed' ? 'completed' : 'failed' }).catch(err => {
-                    console.error('同步任务到云端失败:', err);
-                  });
-                }
-                return prev;
-              });
-            }, 500);
-          }
-
-          // 如果还在处理中，继续轮询
-          console.log('轮询 - 检查是否继续:', taskData.status, 'retries:', retries);
-          if (!isFinalStatus) {
-            retries++;
-            if (retries < maxRetries) {
-              setTimeout(poll, 5000); // 每 5 秒轮询一次
-            } else {
-              showToast('任务超时，请稍后查询');
-              setIsGeneratingYijia(false);
-            }
-          }
-        } else {
-          // API 返回错误
-          retries++;
-          if (retries < maxRetries) {
-            setTimeout(poll, 5000);
-          } else {
-            showToast('查询任务状态失败');
-            setIsGeneratingYijia(false);
-          }
-        }
-      } catch (error) {
-        console.error('轮询任务状态失败:', error);
-        retries++;
-        if (retries < maxRetries) {
-          setTimeout(poll, 5000);
-        } else {
-          showToast('查询任务状态失败，请稍后查询');
-          setIsGeneratingYijia(false);
-        }
-      }
-    };
-
-    poll();
-  };
-
-  // 清除 YIJIA 图片
-  const handleClearYijiaImage = () => {
-    setYijiaImageUrl('');
-  };
-
   const getChangelog = () => {
     const changes = [
       {
@@ -2498,7 +2316,7 @@ function App() {
 
                 {/* 视频生成Tab内容 */}
                 {leftMainTab === 'video' && (
-                  <>
+                  <div>
                     <div className="form-group" style={{ marginBottom: '1.5rem' }}>
                       <label className="label">选择功能</label>
                       <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
@@ -2514,18 +2332,12 @@ function App() {
                         >
                           视频S · 图生视频
                         </button>
-                        <button
-                          className={`function-select-btn ${videoFunction === 'sora-yijia' ? 'active' : ''}`}
-                          onClick={() => setVideoFunction('sora-yijia')}
-                        >
-                          SORA YJ
-                        </button>
                       </div>
                     </div>
 
                     {/* 文生视频模块 */}
                     {videoFunction === 'text-to-video' && (
-                      <>
+                      <div>
                         <div className="form-group">
                           <label className="label">提示词</label>
                           <textarea
@@ -2573,6 +2385,8 @@ function App() {
                               <option value="3">3个</option>
                               <option value="5">5个</option>
                               <option value="10">10个</option>
+                              <option value="20">20个</option>
+                              <option value="30">30个</option>
                             </select>
                           </div>
 
@@ -2597,12 +2411,12 @@ function App() {
                             💾 保存提示词
                           </button>
                         </div>
-                      </>
+                      </div>
                     )}
 
                     {/* 图生视频模块 */}
                     {videoFunction === 'image-to-video' && (
-                      <>
+                      <div>
                         <div className="form-group">
                           <label className="label">上传图片</label>
                           <div style={{ display: 'flex', gap: '1rem', alignItems: 'flex-start' }}>
@@ -2625,7 +2439,7 @@ function App() {
                               }}
                             >
                               {imageUrl ? (
-                                <>
+                                <div>
                                   <img
                                     src={imageUrl}
                                     alt="预览"
@@ -2659,7 +2473,7 @@ function App() {
                                   >
                                     ×
                                   </button>
-                                </>
+                                </div>
                               ) : (
                                 <div style={{ textAlign: 'center', color: 'var(--text-secondary)' }}>
                                   <div style={{ fontSize: '2rem' }}>+</div>
@@ -2733,6 +2547,8 @@ function App() {
                               <option value="3">3个</option>
                               <option value="5">5个</option>
                               <option value="10">10个</option>
+                              <option value="20">20个</option>
+                              <option value="30">30个</option>
                             </select>
                           </div>
 
@@ -2757,133 +2573,16 @@ function App() {
                             💾 保存提示词
                           </button>
                         </div>
-                      </>
+                      </div>
                     )}
 
-                    {/* SORA YJ 模块 */}
-                    {videoFunction === 'sora-yijia' && (
-                      <>
-                        <div className="form-group">
-                          <label className="label">API Key</label>
-                          <input
-                            type="password"
-                            className="input"
-                            value={yijiaApiKey}
-                            onChange={(e) => {
-                              setYijiaApiKey(e.target.value);
-                              localStorage.setItem('yijia_api_key', e.target.value);
-                            }}
-                            placeholder="请输入 YIJIA API Key"
-                          />
-                        </div>
-
-                        <div className="form-group">
-                          <label className="label">模型选择</label>
-                          <select
-                            className="input select"
-                            value={yijiaModel}
-                            onChange={(e) => setYijiaModel(e.target.value)}
-                          >
-                            <option value="sora-2-yijia">Sora 2.0 YIJIA</option>
-                            <option value="kling-1.5-yijia">Kling 1.5 YIJIA</option>
-                            <option value="sora_video2-portrait-10s">Sora Video2 竖屏</option>
-                            <option value="sora_video2-landscape-10s">Sora Video2 横屏</option>
-                            <option value="sora-2-openai">Sora 2 OpenAI</option>
-                          </select>
-                        </div>
-
-                        <div className="form-group">
-                          <label className="label">图片链接 (可选，图生视频时填写)</label>
-                          <div style={{ display: 'flex', gap: '0.5rem' }}>
-                            <input
-                              type="text"
-                              className="input"
-                              value={yijiaImageUrl}
-                              onChange={(e) => setYijiaImageUrl(e.target.value)}
-                              placeholder="请输入图片链接，留空则为文生视频"
-                              style={{ flex: 1 }}
-                            />
-                            {yijiaImageUrl && (
-                              <button
-                                className="btn btn-secondary"
-                                onClick={handleClearYijiaImage}
-                              >
-                                清除
-                              </button>
-                            )}
-                          </div>
-                          {yijiaImageUrl && (
-                            <div style={{ marginTop: '0.5rem' }}>
-                              <img 
-                                src={yijiaImageUrl} 
-                                alt="预览" 
-                                style={{ maxWidth: '200px', borderRadius: '8px' }}
-                                onError={(e) => {
-                                  e.target.style.display = 'none';
-                                }}
-                              />
-                            </div>
-                          )}
-                        </div>
-
-                        <div className="form-row">
-                          <div className="form-group">
-                            <label className="label">时长</label>
-                            <select
-                              className="input select"
-                              value={yijiaDuration}
-                              onChange={(e) => setYijiaDuration(e.target.value)}
-                            >
-                              <option value="5">5秒</option>
-                              <option value="10">10秒</option>
-                              <option value="15">15秒</option>
-                              <option value="20">20秒</option>
-                            </select>
-                          </div>
-
-                          <div className="form-group">
-                            <label className="label">画面比例</label>
-                            <select
-                              className="input select"
-                              value={yijiaAspectRatio}
-                              onChange={(e) => setYijiaAspectRatio(e.target.value)}
-                            >
-                              <option value="9:16">竖屏 (9:16)</option>
-                              <option value="16:9">横屏 (16:9)</option>
-                              <option value="1:1">方形 (1:1)</option>
-                            </select>
-                          </div>
-                        </div>
-
-                        <div className="form-group">
-                          <label className="label">视频描述</label>
-                          <textarea
-                            className="input textarea"
-                            value={yijiaPrompt}
-                            onChange={(e) => setYijiaPrompt(e.target.value)}
-                            placeholder="描述你想要生成的视频内容..."
-                            maxLength="4000"
-                          />
-                        </div>
-
-                        <div className="form-group">
-                          <button
-                            className="btn"
-                            onClick={handleGenerateYijia}
-                            disabled={isGeneratingYijia || !yijiaApiKey || !yijiaPrompt.trim()}
-                            style={{ minWidth: '120px' }}
-                          >
-                            {isGeneratingYijia ? '生成中...' : '生成视频'}
-                          </button>
-                        </div>
-                      </>
-                    )}
-                  </>
+                    {/* SORA YJ 模块已移除 */}
+                  </div>
                 )}
 
                 {/* 图片生成Tab内容 */}
                 {leftMainTab === 'image' && (
-                  <>
+                  <div>
                     <div className="form-group" style={{ marginBottom: '1.5rem' }}>
                       <label className="label">选择功能</label>
                       <div style={{ display: 'flex', gap: '0.5rem' }}>
@@ -2898,7 +2597,7 @@ function App() {
 
                     {/* 图生图模块 */}
                     {imageFunction === 'image-to-image' && (
-                      <>
+                      <div>
                         <div className="form-group">
                           <label className="label">上传原图 ({editImageUrls.length}/10)</label>
                           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem', alignItems: 'flex-start' }}>
@@ -3048,6 +2747,8 @@ function App() {
                               <option value="3">3个</option>
                               <option value="5">5个</option>
                               <option value="10">10个</option>
+                              <option value="20">20个</option>
+                              <option value="30">30个</option>
                             </select>
                           </div>
 
@@ -3072,9 +2773,9 @@ function App() {
                             💾 保存提示词
                           </button>
                         </div>
-                      </>
+                      </div>
                     )}
-                  </>
+                  </div>
                 )}
               </div>
 
@@ -3184,13 +2885,54 @@ function App() {
                     </button>
                     <button
                       className={`tab-button ${rightTab === 'image' ? 'active' : ''}`}
-                      onClick={() => setRightTab('image')}
+                      onClick={() => { setRightTab('image'); setCurrentPage(1); }}
                     >
                       图片 ({editTasks.length})
                     </button>
                   </div>
                   
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+                    {/* 视频筛选 - 仅视频Tab显示 */}
+                    {rightTab === 'video' && (
+                      <select
+                        value={videoFilter}
+                        onChange={(e) => { setVideoFilter(e.target.value); setCurrentPage(1); }}
+                        style={{
+                          padding: '0.375rem 0.5rem',
+                          border: '1px solid var(--border-color)',
+                          borderRadius: '0.375rem',
+                          background: 'var(--bg-primary)',
+                          color: 'var(--text-primary)',
+                          fontSize: '0.8rem',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        <option value="all">全部视频</option>
+                        <option value="text-to-video">文生视频</option>
+                        <option value="image-to-video">图生视频</option>
+                      </select>
+                    )}
+                    
+                    {/* 排序按钮 */}
+                    {(rightTab === 'video' || rightTab === 'all') && tasks.length > 0 && (
+                      <button
+                        onClick={() => { setSortOrder(sortOrder === 'desc' ? 'asc' : 'desc'); setCurrentPage(1); }}
+                        style={{
+                          padding: '0.375rem 0.5rem',
+                          border: '1px solid var(--border-color)',
+                          borderRadius: '0.375rem',
+                          background: 'var(--bg-primary)',
+                          color: 'var(--text-primary)',
+                          cursor: 'pointer',
+                          fontSize: '0.8rem',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '0.25rem'
+                        }}
+                      >
+                        {sortOrder === 'desc' ? '🔽 最新优先' : '🔼 最旧优先'}
+                      </button>
+                    )}
                     {/* 视图模式切换 */}
                     <div style={{ display: 'flex', gap: '0.25rem', background: 'var(--bg-secondary)', padding: '0.25rem', borderRadius: '0.5rem' }}>
                       <button
@@ -3328,10 +3070,28 @@ function App() {
                         暂无生成记录
                       </div>
                     ) : (
-                      <div className={viewMode === 'list' ? 'task-list' : 'task-grid'}>
-                        {/* 视频任务 */}
-                        {tasks.map(task => (
-                          <div key={task.taskId} className={viewMode === 'list' ? 'task-list-item' : 'task-card'}>
+                      <div>
+                        {/* 排序和筛选后的视频任务 */}
+                        {(() => {
+                          // 排序视频任务
+                          const sortedTasks = [...tasks].sort((a, b) => {
+                            const dateA = new Date(a.createdAt || 0);
+                            const dateB = new Date(b.createdAt || 0);
+                            return sortOrder === 'desc' ? dateB - dateA : dateA - dateB;
+                          });
+                          
+                          // 分页
+                          const totalPages = Math.ceil(sortedTasks.length / itemsPerPage);
+                          const startIndex = (currentPage - 1) * itemsPerPage;
+                          const endIndex = startIndex + itemsPerPage;
+                          const paginatedTasks = sortedTasks.slice(startIndex, endIndex);
+                          
+                          return (
+                            <div>
+                              <div className={viewMode === 'list' ? 'task-list' : 'task-grid'}>
+                                {/* 视频任务 */}
+                                {paginatedTasks.map(task => (
+                                  <div key={task._uniqueKey || task.taskId} className={viewMode === 'list' ? 'task-list-item' : 'task-card'}>
                             {viewMode === 'list' && (
                               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
                                 <input
@@ -3380,7 +3140,7 @@ function App() {
                               }}
                             >
                               {task.resultUrl ? (
-                                <>
+                                <div>
                                   <video
                                     ref={(videoEl) => {
                                       if (videoEl && !videoEl.dataset.loaded && !task.previewUrl) {
@@ -3423,7 +3183,7 @@ function App() {
                                   <div className="play-overlay">
                                     ▶
                                   </div>
-                                </>
+                                </div>
                               ) : (
                                 <div style={{
                                   position: 'absolute',
@@ -3451,7 +3211,7 @@ function App() {
                                   </span>
                                 </div>
                               ) : (
-                                <>
+                                <div>
                                   <span className={`task-badge ${task.type === 'image-to-video' ? 'image-video' : 'video'}`}>
                                     {task.type === 'image-to-video' ? '图生视频' : '文生视频'}
                                   </span>
@@ -3489,14 +3249,14 @@ function App() {
                                       </div>
                                     </div>
                                   )}
-                                </>
+                                </div>
                               )}
 
                               <div className="task-actions" style={viewMode === 'list' ? { gap: '0.5rem' } : {}}>
                                 {viewMode === 'list' ? (
-                                  <>
+                                  <div>
                                     {task.resultUrl && (
-                                      <>
+                                      <div>
                                         <span 
                                           onClick={() => handleClone(task)}
                                           style={{ color: 'var(--primary-color)', cursor: 'pointer', fontSize: '0.7rem' }}
@@ -3509,7 +3269,7 @@ function App() {
                                         >
                                           下载
                                         </span>
-                                      </>
+                                      </div>
                                     )}
                                     <span 
                                       onClick={() => handleDelete(task.taskId)}
@@ -3517,11 +3277,11 @@ function App() {
                                     >
                                       删除
                                     </span>
-                                  </>
+                                  </div>
                                 ) : (
-                                  <>
+                                  <div>
                                     {task.resultUrl && (
-                                      <>
+                                      <div>
                                         <button
                                           className="btn btn-small"
                                           onClick={() => handleClone(task)}
@@ -3536,7 +3296,7 @@ function App() {
                                         >
                                           下载
                                         </button>
-                                      </>
+                                      </div>
                                     )}
                                     <button
                                       className="btn btn-secondary btn-small btn-icon"
@@ -3545,7 +3305,7 @@ function App() {
                                     >
                                       ×
                                     </button>
-                                  </>
+                                  </div>
                                 )}
                               </div>
                             </div>
@@ -3553,7 +3313,7 @@ function App() {
                         ))}
                         {/* 图片任务 */}
                         {editTasks.map(task => (
-                          <div key={task.taskId} className="task-card">
+                          <div key={task._uniqueKey || task.taskId} className="task-card">
                             <div className="task-preview">
                               {task.resultUrl ? (
                                 <img
@@ -3573,10 +3333,10 @@ function App() {
                                   color: 'var(--text-secondary)'
                                 }}>
                                   {task.status === 'RUNNING' ? (
-                                    <>
+                                    <div>
                                       <div className="spinner" style={{ width: '40px', height: '40px' }} />
                                       <div style={{ marginTop: '0.5rem', fontSize: '0.75rem' }}>生成中</div>
-                                    </>
+                                    </div>
                                   ) : (
                                     <span>等待中</span>
                                   )}
@@ -3618,6 +3378,46 @@ function App() {
                           </div>
                         ))}
                       </div>
+                      {/* 分页控件 */}
+                      {Math.ceil(sortedTasks.length / itemsPerPage) > 1 && (
+                        <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '0.5rem', marginTop: '1rem', padding: '0.5rem' }}>
+                          <button
+                            onClick={() => setCurrentPage(1)}
+                            disabled={currentPage === 1}
+                            style={{ padding: '0.375rem 0.5rem', border: '1px solid var(--border-color)', borderRadius: '0.375rem', background: 'var(--bg-primary)', color: currentPage === 1 ? 'var(--text-secondary)' : 'var(--text-primary)', cursor: currentPage === 1 ? 'not-allowed' : 'pointer', fontSize: '0.75rem' }}
+                          >
+                            首页
+                          </button>
+                          <button
+                            onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                            disabled={currentPage === 1}
+                            style={{ padding: '0.375rem 0.5rem', border: '1px solid var(--border-color)', borderRadius: '0.375rem', background: 'var(--bg-primary)', color: currentPage === 1 ? 'var(--text-secondary)' : 'var(--text-primary)', cursor: currentPage === 1 ? 'not-allowed' : 'pointer', fontSize: '0.75rem' }}
+                          >
+                            上一页
+                          </button>
+                          <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                            {currentPage} / {totalPages}
+                          </span>
+                          <button
+                            onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                            disabled={currentPage >= totalPages}
+                            style={{ padding: '0.375rem 0.5rem', border: '1px solid var(--border-color)', borderRadius: '0.375rem', background: 'var(--bg-primary)', color: currentPage >= totalPages ? 'var(--text-secondary)' : 'var(--text-primary)', cursor: currentPage >= totalPages ? 'not-allowed' : 'pointer', fontSize: '0.75rem' }}
+                          >
+                            下一页
+                          </button>
+                          <button
+                            onClick={() => setCurrentPage(totalPages)}
+                            disabled={currentPage >= totalPages}
+                            style={{ padding: '0.375rem 0.5rem', border: '1px solid var(--border-color)', borderRadius: '0.375rem', background: 'var(--bg-primary)', color: currentPage >= totalPages ? 'var(--text-secondary)' : 'var(--text-primary)', cursor: currentPage >= totalPages ? 'not-allowed' : 'pointer', fontSize: '0.75rem' }}
+                          >
+                            末页
+                          </button>
+                        </div>
+                      )}
+                            </div>
+                            );
+                        })()}
+                      </div>
                     )}
                   </div>
                 )}
@@ -3635,9 +3435,28 @@ function App() {
                         暂无视频记录
                       </div>
                     ) : (
-                      <div className={viewMode === 'list' ? 'task-list' : 'task-grid'}>
-                        {tasks.map(task => (
-                          <div key={task.taskId} className={viewMode === 'list' ? 'task-list-item' : 'task-card'}>
+                      <div>
+                        {/* 排序和筛选后的视频任务 */}
+                        {(() => {
+                          // 筛选视频
+                          const filteredTasks = videoFilter === 'all' ? tasks : tasks.filter(t => t.type === videoFilter);
+                          // 排序
+                          const sortedTasks = [...filteredTasks].sort((a, b) => {
+                            const dateA = new Date(a.createdAt || 0);
+                            const dateB = new Date(b.createdAt || 0);
+                            return sortOrder === 'desc' ? dateB - dateA : dateA - dateB;
+                          });
+                          // 分页
+                          const totalPages = Math.ceil(sortedTasks.length / itemsPerPage);
+                          const startIndex = (currentPage - 1) * itemsPerPage;
+                          const endIndex = startIndex + itemsPerPage;
+                          const paginatedTasks = sortedTasks.slice(startIndex, endIndex);
+                          
+                          return (
+                            <div>
+                              <div className={viewMode === 'list' ? 'task-list' : 'task-grid'}>
+                                {paginatedTasks.map(task => (
+                                  <div key={task._uniqueKey || task.taskId} className={viewMode === 'list' ? 'task-list-item' : 'task-card'}>
                             {viewMode === 'list' && (
                               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
                                 <input
@@ -3686,7 +3505,7 @@ function App() {
                               }}
                             >
                               {task.resultUrl ? (
-                                <>
+                                <div>
                                   <video
                                     ref={(videoEl) => {
                                       if (videoEl && !videoEl.dataset.loaded && !task.previewUrl) {
@@ -3729,7 +3548,7 @@ function App() {
                                   <div className="play-overlay">
                                     ▶
                                   </div>
-                                </>
+                                </div>
                               ) : (
                                 <div style={{
                                   position: 'absolute',
@@ -3757,7 +3576,7 @@ function App() {
                                   </span>
                                 </div>
                               ) : (
-                                <>
+                                <div>
                                   <span className={`task-badge ${task.type === 'image-to-video' ? 'image-video' : 'video'}`}>
                                     {task.type === 'image-to-video' ? '图生视频' : '文生视频'}
                                   </span>
@@ -3795,14 +3614,14 @@ function App() {
                                       </div>
                                     </div>
                                   )}
-                                </>
+                                </div>
                               )}
 
                               <div className="task-actions" style={viewMode === 'list' ? { gap: '0.5rem' } : {}}>
                                 {viewMode === 'list' ? (
-                                  <>
+                                  <div>
                                     {task.resultUrl && (
-                                      <>
+                                      <div>
                                         <span 
                                           onClick={() => handleClone(task)}
                                           style={{ color: 'var(--primary-color)', cursor: 'pointer', fontSize: '0.7rem' }}
@@ -3815,7 +3634,7 @@ function App() {
                                         >
                                           下载
                                         </span>
-                                      </>
+                                      </div>
                                     )}
                                     <span 
                                       onClick={() => handleDelete(task.taskId)}
@@ -3823,11 +3642,11 @@ function App() {
                                     >
                                       删除
                                     </span>
-                                  </>
+                                  </div>
                                 ) : (
-                                  <>
+                                  <div>
                                     {task.resultUrl && (
-                                      <>
+                                      <div>
                                         <button
                                           className="btn btn-small"
                                           onClick={() => handleClone(task)}
@@ -3842,7 +3661,7 @@ function App() {
                                         >
                                           下载
                                         </button>
-                                      </>
+                                      </div>
                                     )}
                                     <button
                                       className="btn btn-secondary btn-small btn-icon"
@@ -3851,12 +3670,52 @@ function App() {
                                     >
                                       ×
                                     </button>
-                                  </>
+                                  </div>
                                 )}
                               </div>
                             </div>
                           </div>
                         ))}
+                      </div>
+                      {/* 视频分页控件 */}
+                      {totalPages > 1 && (
+                        <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '0.5rem', marginTop: '1rem', padding: '0.5rem' }}>
+                          <button
+                            onClick={() => setCurrentPage(1)}
+                            disabled={currentPage === 1}
+                            style={{ padding: '0.375rem 0.5rem', border: '1px solid var(--border-color)', borderRadius: '0.375rem', background: 'var(--bg-primary)', color: currentPage === 1 ? 'var(--text-secondary)' : 'var(--text-primary)', cursor: currentPage === 1 ? 'not-allowed' : 'pointer', fontSize: '0.75rem' }}
+                          >
+                            首页
+                          </button>
+                          <button
+                            onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                            disabled={currentPage === 1}
+                            style={{ padding: '0.375rem 0.5rem', border: '1px solid var(--border-color)', borderRadius: '0.375rem', background: 'var(--bg-primary)', color: currentPage === 1 ? 'var(--text-secondary)' : 'var(--text-primary)', cursor: currentPage === 1 ? 'not-allowed' : 'pointer', fontSize: '0.75rem' }}
+                          >
+                            上一页
+                          </button>
+                          <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                            {currentPage} / {totalPages}
+                          </span>
+                          <button
+                            onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                            disabled={currentPage >= totalPages}
+                            style={{ padding: '0.375rem 0.5rem', border: '1px solid var(--border-color)', borderRadius: '0.375rem', background: 'var(--bg-primary)', color: currentPage >= totalPages ? 'var(--text-secondary)' : 'var(--text-primary)', cursor: currentPage >= totalPages ? 'not-allowed' : 'pointer', fontSize: '0.75rem' }}
+                          >
+                            下一页
+                          </button>
+                          <button
+                            onClick={() => setCurrentPage(totalPages)}
+                            disabled={currentPage >= totalPages}
+                            style={{ padding: '0.375rem 0.5rem', border: '1px solid var(--border-color)', borderRadius: '0.375rem', background: 'var(--bg-primary)', color: currentPage >= totalPages ? 'var(--text-secondary)' : 'var(--text-primary)', cursor: currentPage >= totalPages ? 'not-allowed' : 'pointer', fontSize: '0.75rem' }}
+                          >
+                            末页
+                          </button>
+                        </div>
+                      )}
+                            </div>
+                            );
+                        })()}
                       </div>
                     )}
                   </div>
@@ -3872,7 +3731,7 @@ function App() {
                     ) : (
                       <div className="task-grid">
                         {editTasks.map(task => (
-                          <div key={task.taskId} className="task-card">
+                          <div key={task._uniqueKey || task.taskId} className="task-card">
                             <div className="task-preview">
                               {task.resultUrl ? (
                                 <img
@@ -3892,10 +3751,10 @@ function App() {
                                   color: 'var(--text-secondary)'
                                 }}>
                                   {task.status === 'RUNNING' ? (
-                                    <>
+                                    <div>
                                       <div className="spinner" style={{ width: '40px', height: '40px' }} />
                                       <div style={{ marginTop: '0.5rem', fontSize: '0.75rem' }}>生成中</div>
-                                    </>
+                                    </div>
                                   ) : (
                                     <span>等待中</span>
                                   )}
@@ -4007,10 +3866,10 @@ function App() {
                   <input 
                     type="radio"
                     name="maxConcurrent"
-                    checked={settings.maxConcurrent === 50}
-                    onChange={() => setSettings({ ...settings, maxConcurrent: 50 })}
+                    checked={settings.maxConcurrent === 100}
+                    onChange={() => setSettings({ ...settings, maxConcurrent: 100 })}
                   />
-                  50
+                  100
                 </label>
               </div>
             </div>
