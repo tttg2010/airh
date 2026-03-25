@@ -5,6 +5,7 @@ import './index.css';
 
 const API_BASE_URL = 'https://www.runninghub.cn/openapi/v2';
 const DEFAULT_API_KEY = import.meta.env.RUNNINGHUB_API_KEY || '';
+const YIJIA_API_KEY = import.meta.env.YIJIA_API_KEY || '';
 const CLOUDBASE_ENV = 'ai-rh202602-4g44noj4b1870204';
 
 // 初始化 CloudBase
@@ -97,13 +98,31 @@ function App() {
   const [leftMainTab, setLeftMainTab] = useState('video');
 
   // 视频生成Tab下的功能选择
-  const [videoFunction, setVideoFunction] = useState('text-to-video'); // text-to-video | image-to-video
+  const [videoFunction, setVideoFunction] = useState('text-to-video'); // text-to-video | image-to-video | sora-yijia
+
+  // YIJIA 视频生成状态
+  const [yijiaApiKey, setYijiaApiKey] = useState(() => {
+    const stored = localStorage.getItem('yijia_api_key');
+    if (stored) return stored;
+    return YIJIA_API_KEY;
+  });
+  const [yijiaPrompt, setYijiaPrompt] = useState('');
+  const [yijiaModel, setYijiaModel] = useState('sora-2-yijia');
+  const [yijiaImageUrl, setYijiaImageUrl] = useState('');
+  const [yijiaDuration, setYijiaDuration] = useState('5');
+  const [yijiaAspectRatio, setYijiaAspectRatio] = useState('9:16');
+  const [isGeneratingYijia, setIsGeneratingYijia] = useState(false);
 
   // 图片生成Tab下的功能选择
   const [imageFunction, setImageFunction] = useState('image-to-image'); // image-to-image
 
   // 右侧历史记录Tab状态
   const [rightTab, setRightTab] = useState('all'); // all | video | image
+  // 视图模式状态（网格/列表）
+  const [viewMode, setViewMode] = useState('grid'); // grid | list
+  // 批量选择状态
+  const [selectedTasks, setSelectedTasks] = useState([]); // 选中的任务ID列表
+  const [selectAllLoading, setSelectAllLoading] = useState(false);
 
   // 其他状态...
   useEffect(() => {
@@ -1051,23 +1070,31 @@ function App() {
 
   // 页面加载时检查所有未完成的任务
   useEffect(() => {
-    if (!apiKey || !tasksLoaded || tasks.length === 0) return;
+    if (!tasksLoaded || tasks.length === 0) return;
     
     const pendingTasks = tasks.filter(task => 
       task.status === 'RUNNING' || 
       task.status === 'QUEUED' || 
       task.status === '获取结果中...' ||
-      task.status === '网络中断，正在重试...'
+      task.status === '网络中断，正在重试...' ||
+      task.status === 'processing' ||
+      task.status === 'queued' ||
+      task.status === 'pending'
     );
     
     if (pendingTasks.length > 0) {
       console.log(`发现 ${pendingTasks.length} 个未完成任务，开始重新查询状态`);
       pendingTasks.forEach(task => {
-        console.log(`重新查询任务: ${task.taskId}`);
-        pollTaskStatus(task.taskId);
+        console.log(`重新查询任务: ${task.taskId}, 类型: ${task.type}, 状态: ${task.status}`);
+        if (task.type === 'sora-yijia') {
+          // YIJIA 任务用专门的轮询函数
+          pollYijiaTaskStatus(task.taskId, task.id, task.model);
+        } else {
+          pollTaskStatus(task.taskId);
+        }
       });
     }
-  }, [apiKey]); // 只在 apiKey 变化时执行，避免无限循环
+  }, [tasksLoaded]);
 
   const handleApiKeySubmit = (e) => {
     e.preventDefault();
@@ -1885,6 +1912,293 @@ function App() {
     setImageUrl(null);
   };
 
+  // YIJIA 视频生成
+  const handleGenerateYijia = async () => {
+    if (!yijiaApiKey) {
+      showToast('请先配置 YIJIA API Key');
+      return;
+    }
+
+    if (!yijiaPrompt.trim()) {
+      showToast('请输入视频描述');
+      return;
+    }
+
+    setIsGeneratingYijia(true);
+
+    try {
+      // 判断是否为 yijia 模型
+      const isYijiaModel = yijiaModel.includes('-yijia');
+      
+      // 根据模型类型构建不同的请求体
+      let requestBody;
+      let apiUrl;
+      
+      if (isYijiaModel) {
+        // yijia 模型
+        requestBody = {
+          model: yijiaModel,
+          prompt: yijiaPrompt.trim(),
+          size: yijiaApiKey // yijia 模型 size 传 API Key
+        };
+        apiUrl = 'https://ai.yijiarj.cn/v1/videos';
+      } else {
+        // 非 yijia 模型
+        // 解析比例得到分辨率
+        const resolutionMap = {
+          '9:16': '720x1280',
+          '16:9': '1280x720',
+          '1:1': '720x720'
+        };
+        requestBody = {
+          model: yijiaModel,
+          prompt: yijiaPrompt.trim(),
+          size: resolutionMap[yijiaAspectRatio] || '720x1280',
+          seconds: yijiaDuration,
+          watermark: false,
+          private: false
+        };
+        apiUrl = 'https://api.yijiarj.cn/v1/videos'; // 非 yijia 模型走大带宽线路
+      }
+
+      // 如果有图片 URL，添加到请求中（图生视频模式）
+      if (yijiaImageUrl.trim()) {
+        requestBody.input_reference = yijiaImageUrl.trim();
+      }
+
+      console.log('YIJIA 请求体:', requestBody);
+      console.log('API URL:', apiUrl);
+
+      const response = await fetch(apiUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${yijiaApiKey}`
+        },
+        body: JSON.stringify(requestBody),
+        signal: AbortSignal.timeout(30000)
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        let errorMessage = `HTTP错误: ${response.status}`;
+        try {
+          const errorJson = JSON.parse(errorText);
+          errorMessage = errorJson.message || errorJson.msg || errorMessage;
+        } catch (e) {
+          if (errorText) {
+            errorMessage = errorText.substring(0, 100);
+          }
+        }
+        throw new Error(errorMessage);
+      }
+
+      const result = await response.json();
+      console.log('YIJIA 响应状态:', response.status);
+      console.log('YIJIA 响应:', result);
+      console.log('YIJIA 响应 keys:', Object.keys(result));
+      console.log('YIJIA 响应完整内容:', JSON.stringify(result));
+
+      // 检查是否有错误
+      if (result.error) {
+        throw new Error(result.error.message || result.error || '创建任务失败');
+      }
+
+      // 根据新 API 格式解析响应 - 同时支持 id 和 task_id
+      const taskId = result.id || result.task_id;
+      if (taskId) {
+        showToast(`任务已创建，TaskID: ${taskId}`);
+
+        // 保存到本地任务列表
+        const newTask = {
+          id: Date.now(),
+          taskId: taskId,
+          taskIdStr: String(taskId),
+          prompt: yijiaPrompt.trim(),
+          type: 'sora-yijia',
+          status: result.status || 'queued',
+          model: yijiaModel,
+          yijiaTaskId: result.task_id || result.id, // 保存原始 task_id
+          imageUrl: yijiaImageUrl.trim() || null,
+          createdAt: new Date().toISOString(),
+          resultUrl: null,
+          previewUrl: null
+        };
+
+        setTasks(prev => [newTask, ...prev]);
+
+        // 保存到云端
+        if (cloudUser) {
+          await saveTaskToCloud(newTask);
+        }
+
+        // 开始轮询任务状态
+        pollYijiaTaskStatus(taskId, newTask.id, yijiaModel);
+      } else {
+        throw new Error(result.message || '创建任务失败');
+      }
+
+    } catch (error) {
+      console.error('YIJIA 视频生成失败:', error);
+      let errorMsg = error.message;
+      if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
+        errorMsg = '网络连接失败，请检查网络';
+      }
+      showToast(`创建任务失败: ${errorMsg}`);
+    }
+  };
+
+  // 轮询 YIJIA 任务状态
+  const pollYijiaTaskStatus = async (taskId, localTaskId, model) => {
+    let retries = 0;
+    let isCompleted = false; // 标记任务是否已完成，防止重复处理
+    const maxRetries = 120; // 最多轮询 120 次（10分钟）
+    
+    // 根据模型判断是否为 yijia 模型
+    const isYijiaModel = model && model.includes('-yijia');
+    const statusApiUrl = isYijiaModel ? 'https://ai.yijiarj.cn' : 'https://api.yijiarj.cn';
+
+    const poll = async () => {
+      // 如果已经完成，直接停止轮询
+      if (isCompleted) {
+        console.log('任务已完成，停止轮询');
+        return;
+      }
+
+      try {
+        const response = await fetch(`${statusApiUrl}/v1/videos/${taskId}`, {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${yijiaApiKey}`
+          },
+          signal: AbortSignal.timeout(15000)
+        });
+
+        if (!response.ok) {
+          throw new Error(`HTTP错误: ${response.status}`);
+        }
+
+        const result = await response.json();
+        console.log('YIJIA 任务状态:', result);
+        console.log('YIJIA 任务状态完整:', JSON.stringify(result));
+
+        // 根据新 API 格式解析响应
+        if (result.id) {
+          const taskData = result;
+          const isFinalStatus = taskData.status === 'completed' || taskData.status === 'failed' || taskData.status === 'error';
+          
+          // 更新本地任务状态
+          console.log('轮询 - 查找任务 localTaskId:', localTaskId);
+          setTasks(prev => {
+            const found = prev.find(t => t.id === localTaskId);
+            console.log('轮询 - 找到任务:', found ? found.taskId : '未找到');
+            
+            // 如果已经是最终状态，跳过更新
+            if (isFinalStatus && found && (found.status === 'completed' || found.status === 'failed')) {
+              console.log('任务状态已是最终状态，跳过更新');
+              return prev;
+            }
+            
+            return prev.map(task => {
+              if (task.id === localTaskId) {
+                console.log('轮询 - 更新任务状态:', taskData.status);
+                const updatedTask = { ...task };
+                
+                // 新 API 状态: queued, processing, completed, failed, error
+                console.log('任务完成检查 - status:', taskData.status, 'url:', taskData.url, 'size:', taskData.size);
+                if (taskData.status === 'completed') {
+                  console.log('任务完成 - 设置视频URL:', taskData.url, '缩略图:', taskData.size);
+                  // 检查是否违规
+                  if (taskData.quality && taskData.quality !== 'standard') {
+                    updatedTask.status = 'failed';
+                    updatedTask.error = `内容违规: ${taskData.quality}`;
+                    showToast(`生成失败: 内容违规`);
+                  } else {
+                    updatedTask.status = 'completed';
+                    // url 是无水印视频
+                    updatedTask.resultUrl = taskData.url || null;
+                    // size 可能是 URL 或分辨率字符串，如果是 URL 则用它作为缩略图
+                    updatedTask.previewUrl = taskData.size && taskData.size.startsWith('http') ? taskData.size : null;
+                    showToast('视频生成成功！');
+                  }
+                  setIsGeneratingYijia(false);
+                } else if (taskData.status === 'error' || taskData.status === 'failed') {
+                  updatedTask.status = 'failed';
+                  updatedTask.error = taskData.error || taskData.quality || '生成失败';
+                  showToast(`生成失败: ${updatedTask.error}`);
+                  setIsGeneratingYijia(false);
+                } else if (taskData.status === 'processing') {
+                  updatedTask.status = 'processing';
+                  // 继续轮询
+                } else if (taskData.status === 'queued') {
+                  updatedTask.status = 'pending';
+                  // 继续轮询
+                }
+                
+                return updatedTask;
+              }
+              return task;
+            });
+          }); // 关闭 setTasks 回调
+          
+          // 如果是最终状态，标记为已完成并同步到云端
+          if (isFinalStatus && !isCompleted) {
+            isCompleted = true;
+            // 使用 setTasks 获取最新状态后同步
+            setTimeout(() => {
+              setTasks(prev => {
+                const task = prev.find(t => t.id === localTaskId);
+                if (task && cloudUser) {
+                  saveTaskToCloud({ ...task, status: taskData.status === 'completed' ? 'completed' : 'failed' }).catch(err => {
+                    console.error('同步任务到云端失败:', err);
+                  });
+                }
+                return prev;
+              });
+            }, 500);
+          }
+
+          // 如果还在处理中，继续轮询
+          console.log('轮询 - 检查是否继续:', taskData.status, 'retries:', retries);
+          if (!isFinalStatus) {
+            retries++;
+            if (retries < maxRetries) {
+              setTimeout(poll, 5000); // 每 5 秒轮询一次
+            } else {
+              showToast('任务超时，请稍后查询');
+              setIsGeneratingYijia(false);
+            }
+          }
+        } else {
+          // API 返回错误
+          retries++;
+          if (retries < maxRetries) {
+            setTimeout(poll, 5000);
+          } else {
+            showToast('查询任务状态失败');
+            setIsGeneratingYijia(false);
+          }
+        }
+      } catch (error) {
+        console.error('轮询任务状态失败:', error);
+        retries++;
+        if (retries < maxRetries) {
+          setTimeout(poll, 5000);
+        } else {
+          showToast('查询任务状态失败，请稍后查询');
+          setIsGeneratingYijia(false);
+        }
+      }
+    };
+
+    poll();
+  };
+
+  // 清除 YIJIA 图片
+  const handleClearYijiaImage = () => {
+    setYijiaImageUrl('');
+  };
+
   const getChangelog = () => {
     const changes = [
       {
@@ -2187,7 +2501,7 @@ function App() {
                   <>
                     <div className="form-group" style={{ marginBottom: '1.5rem' }}>
                       <label className="label">选择功能</label>
-                      <div style={{ display: 'flex', gap: '0.5rem' }}>
+                      <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
                         <button
                           className={`function-select-btn ${videoFunction === 'text-to-video' ? 'active' : ''}`}
                           onClick={() => setVideoFunction('text-to-video')}
@@ -2199,6 +2513,12 @@ function App() {
                           onClick={() => setVideoFunction('image-to-video')}
                         >
                           视频S · 图生视频
+                        </button>
+                        <button
+                          className={`function-select-btn ${videoFunction === 'sora-yijia' ? 'active' : ''}`}
+                          onClick={() => setVideoFunction('sora-yijia')}
+                        >
+                          SORA YJ
                         </button>
                       </div>
                     </div>
@@ -2435,6 +2755,125 @@ function App() {
                             style={{ flex: 1 }}
                           >
                             💾 保存提示词
+                          </button>
+                        </div>
+                      </>
+                    )}
+
+                    {/* SORA YJ 模块 */}
+                    {videoFunction === 'sora-yijia' && (
+                      <>
+                        <div className="form-group">
+                          <label className="label">API Key</label>
+                          <input
+                            type="password"
+                            className="input"
+                            value={yijiaApiKey}
+                            onChange={(e) => {
+                              setYijiaApiKey(e.target.value);
+                              localStorage.setItem('yijia_api_key', e.target.value);
+                            }}
+                            placeholder="请输入 YIJIA API Key"
+                          />
+                        </div>
+
+                        <div className="form-group">
+                          <label className="label">模型选择</label>
+                          <select
+                            className="input select"
+                            value={yijiaModel}
+                            onChange={(e) => setYijiaModel(e.target.value)}
+                          >
+                            <option value="sora-2-yijia">Sora 2.0 YIJIA</option>
+                            <option value="kling-1.5-yijia">Kling 1.5 YIJIA</option>
+                            <option value="sora_video2-portrait-10s">Sora Video2 竖屏</option>
+                            <option value="sora_video2-landscape-10s">Sora Video2 横屏</option>
+                            <option value="sora-2-openai">Sora 2 OpenAI</option>
+                          </select>
+                        </div>
+
+                        <div className="form-group">
+                          <label className="label">图片链接 (可选，图生视频时填写)</label>
+                          <div style={{ display: 'flex', gap: '0.5rem' }}>
+                            <input
+                              type="text"
+                              className="input"
+                              value={yijiaImageUrl}
+                              onChange={(e) => setYijiaImageUrl(e.target.value)}
+                              placeholder="请输入图片链接，留空则为文生视频"
+                              style={{ flex: 1 }}
+                            />
+                            {yijiaImageUrl && (
+                              <button
+                                className="btn btn-secondary"
+                                onClick={handleClearYijiaImage}
+                              >
+                                清除
+                              </button>
+                            )}
+                          </div>
+                          {yijiaImageUrl && (
+                            <div style={{ marginTop: '0.5rem' }}>
+                              <img 
+                                src={yijiaImageUrl} 
+                                alt="预览" 
+                                style={{ maxWidth: '200px', borderRadius: '8px' }}
+                                onError={(e) => {
+                                  e.target.style.display = 'none';
+                                }}
+                              />
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="form-row">
+                          <div className="form-group">
+                            <label className="label">时长</label>
+                            <select
+                              className="input select"
+                              value={yijiaDuration}
+                              onChange={(e) => setYijiaDuration(e.target.value)}
+                            >
+                              <option value="5">5秒</option>
+                              <option value="10">10秒</option>
+                              <option value="15">15秒</option>
+                              <option value="20">20秒</option>
+                            </select>
+                          </div>
+
+                          <div className="form-group">
+                            <label className="label">画面比例</label>
+                            <select
+                              className="input select"
+                              value={yijiaAspectRatio}
+                              onChange={(e) => setYijiaAspectRatio(e.target.value)}
+                            >
+                              <option value="9:16">竖屏 (9:16)</option>
+                              <option value="16:9">横屏 (16:9)</option>
+                              <option value="1:1">方形 (1:1)</option>
+                            </select>
+                          </div>
+                        </div>
+
+                        <div className="form-group">
+                          <label className="label">视频描述</label>
+                          <textarea
+                            className="input textarea"
+                            value={yijiaPrompt}
+                            onChange={(e) => setYijiaPrompt(e.target.value)}
+                            placeholder="描述你想要生成的视频内容..."
+                            maxLength="4000"
+                          />
+                        </div>
+
+                        <div className="form-group">
+                          <button
+                            className="btn"
+                            onClick={handleGenerateYijia}
+                            disabled={isGeneratingYijia || !yijiaApiKey || !yijiaPrompt.trim()}
+                            style={{ minWidth: '120px' }}
+                          >
+                            {isGeneratingYijia ? '生成中...' : '生成视频'}
                           </button>
                         </div>
                       </>
@@ -2729,25 +3168,151 @@ function App() {
             <div style={{ flex: '1', minWidth: '0', display: 'flex', flexDirection: 'column' }}>
               <div className="card" style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
                 {/* 历史记录Tab切换 */}
-                <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1.5rem', borderBottom: '2px solid var(--border-color)', paddingBottom: '0.75rem' }}>
-                  <button
-                    className={`tab-button ${rightTab === 'all' ? 'active' : ''}`}
-                    onClick={() => setRightTab('all')}
-                  >
-                    全部 ({tasks.length + editTasks.length})
-                  </button>
-                  <button
-                    className={`tab-button ${rightTab === 'video' ? 'active' : ''}`}
-                    onClick={() => setRightTab('video')}
-                  >
-                    视频 ({tasks.length})
-                  </button>
-                  <button
-                    className={`tab-button ${rightTab === 'image' ? 'active' : ''}`}
-                    onClick={() => setRightTab('image')}
-                  >
-                    图片 ({editTasks.length})
-                  </button>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', borderBottom: '2px solid var(--border-color)', paddingBottom: '0.75rem' }}>
+                  <div style={{ display: 'flex', gap: '0.5rem' }}>
+                    <button
+                      className={`tab-button ${rightTab === 'all' ? 'active' : ''}`}
+                      onClick={() => setRightTab('all')}
+                    >
+                      全部 ({tasks.length + editTasks.length})
+                    </button>
+                    <button
+                      className={`tab-button ${rightTab === 'video' ? 'active' : ''}`}
+                      onClick={() => setRightTab('video')}
+                    >
+                      视频 ({tasks.length})
+                    </button>
+                    <button
+                      className={`tab-button ${rightTab === 'image' ? 'active' : ''}`}
+                      onClick={() => setRightTab('image')}
+                    >
+                      图片 ({editTasks.length})
+                    </button>
+                  </div>
+                  
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                    {/* 视图模式切换 */}
+                    <div style={{ display: 'flex', gap: '0.25rem', background: 'var(--bg-secondary)', padding: '0.25rem', borderRadius: '0.5rem' }}>
+                      <button
+                        onClick={() => setViewMode('grid')}
+                        style={{
+                          padding: '0.375rem 0.5rem',
+                          border: 'none',
+                          borderRadius: '0.375rem',
+                          background: viewMode === 'grid' ? 'var(--primary-color)' : 'transparent',
+                          color: viewMode === 'grid' ? '#fff' : 'var(--text-primary)',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '0.25rem',
+                          fontSize: '0.8rem'
+                        }}
+                        title="网格视图"
+                      >
+                        <span style={{ display: 'inline-block', width: '14px', height: '14px' }}>
+                          <svg viewBox="0 0 16 16" fill="currentColor" style={{ width: '100%', height: '100%' }}>
+                            <rect x="1" y="1" width="6" height="6" rx="1"/>
+                            <rect x="9" y="1" width="6" height="6" rx="1"/>
+                            <rect x="1" y="9" width="6" height="6" rx="1"/>
+                            <rect x="9" y="9" width="6" height="6" rx="1"/>
+                          </svg>
+                        </span>
+                        网格
+                      </button>
+                      <button
+                        onClick={() => setViewMode('list')}
+                        style={{
+                          padding: '0.375rem 0.5rem',
+                          border: 'none',
+                          borderRadius: '0.375rem',
+                          background: viewMode === 'list' ? 'var(--primary-color)' : 'transparent',
+                          color: viewMode === 'list' ? '#fff' : 'var(--text-primary)',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '0.25rem',
+                          fontSize: '0.8rem'
+                        }}
+                        title="列表视图"
+                      >
+                        <span style={{ display: 'inline-block', width: '14px', height: '14px' }}>
+                          <svg viewBox="0 0 16 16" fill="currentColor" style={{ width: '100%', height: '100%' }}>
+                            <rect x="1" y="2" width="14" height="3" rx="1"/>
+                            <rect x="1" y="7" width="14" height="3" rx="1"/>
+                            <rect x="1" y="12" width="14" height="3" rx="1"/>
+                          </svg>
+                        </span>
+                        列表
+                      </button>
+                    </div>
+                    
+                    {/* 批量操作按钮 - 仅在视频Tab时显示 */}
+                    {rightTab === 'video' && tasks.length > 0 && (
+                      <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                        <button
+                          onClick={() => {
+                            // 获取当前页面最多10个有视频URL的任务
+                            const currentPageTasks = tasks.filter(t => t.resultUrl).slice(0, 10);
+                            if (currentPageTasks.length === 0) {
+                              showToast('当前页面没有可下载的视频');
+                              return;
+                            }
+                            // 如果已全选则取消，否则全选当前页
+                            if (selectedTasks.length === currentPageTasks.length && currentPageTasks.every(t => selectedTasks.includes(t.taskId))) {
+                              setSelectedTasks([]);
+                            } else {
+                              setSelectedTasks(currentPageTasks.map(t => t.taskId));
+                            }
+                          }}
+                          style={{
+                            padding: '0.375rem 0.75rem',
+                            border: '1px solid var(--border-color)',
+                            borderRadius: '0.375rem',
+                            background: 'var(--bg-primary)',
+                            color: 'var(--text-primary)',
+                            cursor: 'pointer',
+                            fontSize: '0.8rem',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '0.25rem'
+                          }}
+                        >
+                          {selectedTasks.length > 0 ? `已选${selectedTasks.length}` : '全选当前页'}
+                        </button>
+                        {selectedTasks.length > 0 && (
+                          <button
+                            onClick={async () => {
+                              setSelectAllLoading(true);
+                              const tasksToDownload = tasks.filter(t => selectedTasks.includes(t.taskId) && t.resultUrl);
+                              for (const task of tasksToDownload) {
+                                await handleDownload(task.resultUrl, task.taskId);
+                                // 间隔一下避免浏览器限制
+                                await new Promise(r => setTimeout(r, 500));
+                              }
+                              setSelectAllLoading(false);
+                              setSelectedTasks([]);
+                              showToast(`已下载 ${tasksToDownload.length} 个视频`);
+                            }}
+                            disabled={selectAllLoading}
+                            style={{
+                              padding: '0.375rem 0.75rem',
+                              border: 'none',
+                              borderRadius: '0.375rem',
+                              background: 'var(--primary-color)',
+                              color: '#fff',
+                              cursor: selectAllLoading ? 'not-allowed' : 'pointer',
+                              fontSize: '0.8rem',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '0.25rem'
+                            }}
+                          >
+                            {selectAllLoading ? '下载中...' : `批量下载 (${selectedTasks.length})`}
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 </div>
 
                 {/* 全部内容 */}
@@ -2763,14 +3328,33 @@ function App() {
                         暂无生成记录
                       </div>
                     ) : (
-                      <div className="task-grid">
+                      <div className={viewMode === 'list' ? 'task-list' : 'task-grid'}>
                         {/* 视频任务 */}
                         {tasks.map(task => (
-                          <div key={task.taskId} className="task-card">
+                          <div key={task.taskId} className={viewMode === 'list' ? 'task-list-item' : 'task-card'}>
+                            {viewMode === 'list' && (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
+                                <input
+                                  type="checkbox"
+                                  checked={selectedTasks.includes(task.taskId)}
+                                  onChange={(e) => {
+                                    if (e.target.checked) {
+                                      setSelectedTasks([...selectedTasks, task.taskId]);
+                                    } else {
+                                      setSelectedTasks(selectedTasks.filter(id => id !== task.taskId));
+                                    }
+                                  }}
+                                  style={{ cursor: 'pointer' }}
+                                />
+                              </div>
+                            )}
                             <div
                               className="task-preview"
+                              style={{
+                                ...(viewMode === 'list' ? { width: '80px', height: '45px', minWidth: '80px', flexShrink: 0 } : {}),
+                                ...(task.resultUrl ? { cursor: 'pointer' } : {})
+                              }}
                               onClick={task.resultUrl ? () => handlePlayVideo(task.resultUrl) : undefined}
-                              style={task.resultUrl ? { cursor: 'pointer' } : {}}
                               onMouseEnter={(e) => {
                                 if (!task.resultUrl) return;
                                 const video = e.currentTarget.querySelector('video');
@@ -2855,71 +3439,114 @@ function App() {
                               )}
                             </div>
 
-                            <div className="task-info">
-                              <span className={`task-badge ${task.type === 'image-to-video' ? 'image-video' : 'video'}`}>
-                                {task.type === 'image-to-video' ? '图生视频' : '文生视频'}
-                              </span>
-                              <div className="task-id">TaskID: {task.taskId}</div>
-                              <div className="task-prompt" title={task.prompt}>{task.prompt}</div>
-                              <div className="task-meta">
-                                <span className={`task-status ${getTaskStatusClass(task.status)}`}>
-                                  {task.status}
-                                </span>
-                                <span className="task-time">
-                                  🕐 {formatDate(task.createdAt)}
-                                </span>
-                              </div>
-
-                              {task.usage && formatCost(task.usage) && (
-                                <div className="task-cost">
-                                  💰 {formatCost(task.usage)}
+                            <div className="task-info" style={viewMode === 'list' ? { padding: '0', fontSize: '0.75rem' } : {}}>
+                              {viewMode === 'list' ? (
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                                  <span className={`task-badge ${task.type === 'image-to-video' ? 'image-video' : 'video'}`} style={{ fontSize: '0.65rem', padding: '0.1rem 0.3rem' }}>
+                                    {task.type === 'image-to-video' ? '图生' : '文生'}
+                                  </span>
+                                  <span style={{ color: 'var(--text-secondary)', fontSize: '0.7rem' }}>{task.prompt?.substring(0, 30)}{task.prompt?.length > 30 ? '...' : ''}</span>
+                                  <span className={`task-status ${getTaskStatusClass(task.status)}`} style={{ fontSize: '0.65rem' }}>
+                                    {task.status}
+                                  </span>
                                 </div>
+                              ) : (
+                                <>
+                                  <span className={`task-badge ${task.type === 'image-to-video' ? 'image-video' : 'video'}`}>
+                                    {task.type === 'image-to-video' ? '图生视频' : '文生视频'}
+                                  </span>
+                                  <div className="task-id">TaskID: {task.taskId}</div>
+                                  <div className="task-prompt" title={task.prompt}>{task.prompt}</div>
+                                  <div className="task-meta">
+                                    <span className={`task-status ${getTaskStatusClass(task.status)}`}>
+                                      {task.status}
+                                    </span>
+                                    <span className="task-time">
+                                      🕐 {formatDate(task.createdAt)}
+                                    </span>
+                                  </div>
+
+                                  {task.usage && formatCost(task.usage) && (
+                                    <div className="task-cost">
+                                      💰 {formatCost(task.usage)}
+                                    </div>
+                                  )}
+
+                                  {task.progress > 0 && task.progress < 100 && (
+                                    <div style={{ marginTop: '0.75rem' }}>
+                                      <div className="progress-bar">
+                                        <div
+                                          className="progress-fill"
+                                          style={{ width: `${task.progress}%` }}
+                                        />
+                                      </div>
+                                      <div style={{
+                                        fontSize: '0.75rem',
+                                        color: 'var(--text-secondary)',
+                                        marginTop: '0.25rem'
+                                      }}>
+                                        {task.progress}%
+                                      </div>
+                                    </div>
+                                  )}
+                                </>
                               )}
 
-                              {task.progress > 0 && task.progress < 100 && (
-                                <div style={{ marginTop: '0.75rem' }}>
-                                  <div className="progress-bar">
-                                    <div
-                                      className="progress-fill"
-                                      style={{ width: `${task.progress}%` }}
-                                    />
-                                  </div>
-                                  <div style={{
-                                    fontSize: '0.75rem',
-                                    color: 'var(--text-secondary)',
-                                    marginTop: '0.25rem'
-                                  }}>
-                                    {task.progress}%
-                                  </div>
-                                </div>
-                              )}
-
-                              <div className="task-actions">
-                                {task.resultUrl && (
+                              <div className="task-actions" style={viewMode === 'list' ? { gap: '0.5rem' } : {}}>
+                                {viewMode === 'list' ? (
                                   <>
-                                    <button
-                                      className="btn btn-small"
-                                      onClick={() => handleClone(task)}
-                                      title="克隆此任务的提示词"
+                                    {task.resultUrl && (
+                                      <>
+                                        <span 
+                                          onClick={() => handleClone(task)}
+                                          style={{ color: 'var(--primary-color)', cursor: 'pointer', fontSize: '0.7rem' }}
+                                        >
+                                          克隆
+                                        </span>
+                                        <span 
+                                          onClick={() => handleDownload(task.resultUrl, task.taskId)}
+                                          style={{ color: 'var(--primary-color)', cursor: 'pointer', fontSize: '0.7rem' }}
+                                        >
+                                          下载
+                                        </span>
+                                      </>
+                                    )}
+                                    <span 
+                                      onClick={() => handleDelete(task.taskId)}
+                                      style={{ color: 'var(--error-color)', cursor: 'pointer', fontSize: '0.7rem' }}
                                     >
-                                      克隆
-                                    </button>
+                                      删除
+                                    </span>
+                                  </>
+                                ) : (
+                                  <>
+                                    {task.resultUrl && (
+                                      <>
+                                        <button
+                                          className="btn btn-small"
+                                          onClick={() => handleClone(task)}
+                                          title="克隆此任务的提示词"
+                                        >
+                                          克隆
+                                        </button>
+                                        <button
+                                          className="btn btn-secondary btn-small"
+                                          data-download={task.taskId}
+                                          onClick={() => handleDownload(task.resultUrl, task.taskId)}
+                                        >
+                                          下载
+                                        </button>
+                                      </>
+                                    )}
                                     <button
-                                      className="btn btn-secondary btn-small"
-                                      data-download={task.taskId}
-                                      onClick={() => handleDownload(task.resultUrl, task.taskId)}
+                                      className="btn btn-secondary btn-small btn-icon"
+                                      onClick={() => handleDelete(task.taskId)}
+                                      title="删除"
                                     >
-                                      下载
+                                      ×
                                     </button>
                                   </>
                                 )}
-                                <button
-                                  className="btn btn-secondary btn-small btn-icon"
-                                  onClick={() => handleDelete(task.taskId)}
-                                  title="删除"
-                                >
-                                  ×
-                                </button>
                               </div>
                             </div>
                           </div>
@@ -3008,13 +3635,32 @@ function App() {
                         暂无视频记录
                       </div>
                     ) : (
-                      <div className="task-grid">
+                      <div className={viewMode === 'list' ? 'task-list' : 'task-grid'}>
                         {tasks.map(task => (
-                          <div key={task.taskId} className="task-card">
+                          <div key={task.taskId} className={viewMode === 'list' ? 'task-list-item' : 'task-card'}>
+                            {viewMode === 'list' && (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
+                                <input
+                                  type="checkbox"
+                                  checked={selectedTasks.includes(task.taskId)}
+                                  onChange={(e) => {
+                                    if (e.target.checked) {
+                                      setSelectedTasks([...selectedTasks, task.taskId]);
+                                    } else {
+                                      setSelectedTasks(selectedTasks.filter(id => id !== task.taskId));
+                                    }
+                                  }}
+                                  style={{ cursor: 'pointer' }}
+                                />
+                              </div>
+                            )}
                             <div
                               className="task-preview"
+                              style={{
+                                ...(viewMode === 'list' ? { width: '80px', height: '45px', minWidth: '80px', flexShrink: 0 } : {}),
+                                ...(task.resultUrl ? { cursor: 'pointer' } : {})
+                              }}
                               onClick={task.resultUrl ? () => handlePlayVideo(task.resultUrl) : undefined}
-                              style={task.resultUrl ? { cursor: 'pointer' } : {}}
                               onMouseEnter={(e) => {
                                 if (!task.resultUrl) return;
                                 const video = e.currentTarget.querySelector('video');
@@ -3099,71 +3745,114 @@ function App() {
                               )}
                             </div>
 
-                            <div className="task-info">
-                              <span className={`task-badge ${task.type === 'image-to-video' ? 'image-video' : 'video'}`}>
-                                {task.type === 'image-to-video' ? '图生视频' : '文生视频'}
-                              </span>
-                              <div className="task-id">TaskID: {task.taskId}</div>
-                              <div className="task-prompt" title={task.prompt}>{task.prompt}</div>
-                              <div className="task-meta">
-                                <span className={`task-status ${getTaskStatusClass(task.status)}`}>
-                                  {task.status}
-                                </span>
-                                <span className="task-time">
-                                  🕐 {formatDate(task.createdAt)}
-                                </span>
-                              </div>
-
-                              {task.usage && formatCost(task.usage) && (
-                                <div className="task-cost">
-                                  💰 {formatCost(task.usage)}
+                            <div className="task-info" style={viewMode === 'list' ? { padding: '0', fontSize: '0.75rem' } : {}}>
+                              {viewMode === 'list' ? (
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                                  <span className={`task-badge ${task.type === 'image-to-video' ? 'image-video' : 'video'}`} style={{ fontSize: '0.65rem', padding: '0.1rem 0.3rem' }}>
+                                    {task.type === 'image-to-video' ? '图生' : '文生'}
+                                  </span>
+                                  <span style={{ color: 'var(--text-secondary)', fontSize: '0.7rem' }}>{task.prompt?.substring(0, 30)}{task.prompt?.length > 30 ? '...' : ''}</span>
+                                  <span className={`task-status ${getTaskStatusClass(task.status)}`} style={{ fontSize: '0.65rem' }}>
+                                    {task.status}
+                                  </span>
                                 </div>
+                              ) : (
+                                <>
+                                  <span className={`task-badge ${task.type === 'image-to-video' ? 'image-video' : 'video'}`}>
+                                    {task.type === 'image-to-video' ? '图生视频' : '文生视频'}
+                                  </span>
+                                  <div className="task-id">TaskID: {task.taskId}</div>
+                                  <div className="task-prompt" title={task.prompt}>{task.prompt}</div>
+                                  <div className="task-meta">
+                                    <span className={`task-status ${getTaskStatusClass(task.status)}`}>
+                                      {task.status}
+                                    </span>
+                                    <span className="task-time">
+                                      🕐 {formatDate(task.createdAt)}
+                                    </span>
+                                  </div>
+
+                                  {task.usage && formatCost(task.usage) && (
+                                    <div className="task-cost">
+                                      💰 {formatCost(task.usage)}
+                                    </div>
+                                  )}
+
+                                  {task.progress > 0 && task.progress < 100 && (
+                                    <div style={{ marginTop: '0.75rem' }}>
+                                      <div className="progress-bar">
+                                        <div
+                                          className="progress-fill"
+                                          style={{ width: `${task.progress}%` }}
+                                        />
+                                      </div>
+                                      <div style={{
+                                        fontSize: '0.75rem',
+                                        color: 'var(--text-secondary)',
+                                        marginTop: '0.25rem'
+                                      }}>
+                                        {task.progress}%
+                                      </div>
+                                    </div>
+                                  )}
+                                </>
                               )}
 
-                              {task.progress > 0 && task.progress < 100 && (
-                                <div style={{ marginTop: '0.75rem' }}>
-                                  <div className="progress-bar">
-                                    <div
-                                      className="progress-fill"
-                                      style={{ width: `${task.progress}%` }}
-                                    />
-                                  </div>
-                                  <div style={{
-                                    fontSize: '0.75rem',
-                                    color: 'var(--text-secondary)',
-                                    marginTop: '0.25rem'
-                                  }}>
-                                    {task.progress}%
-                                  </div>
-                                </div>
-                              )}
-
-                              <div className="task-actions">
-                                {task.resultUrl && (
+                              <div className="task-actions" style={viewMode === 'list' ? { gap: '0.5rem' } : {}}>
+                                {viewMode === 'list' ? (
                                   <>
-                                    <button
-                                      className="btn btn-small"
-                                      onClick={() => handleClone(task)}
-                                      title="克隆此任务的提示词"
+                                    {task.resultUrl && (
+                                      <>
+                                        <span 
+                                          onClick={() => handleClone(task)}
+                                          style={{ color: 'var(--primary-color)', cursor: 'pointer', fontSize: '0.7rem' }}
+                                        >
+                                          克隆
+                                        </span>
+                                        <span 
+                                          onClick={() => handleDownload(task.resultUrl, task.taskId)}
+                                          style={{ color: 'var(--primary-color)', cursor: 'pointer', fontSize: '0.7rem' }}
+                                        >
+                                          下载
+                                        </span>
+                                      </>
+                                    )}
+                                    <span 
+                                      onClick={() => handleDelete(task.taskId)}
+                                      style={{ color: 'var(--error-color)', cursor: 'pointer', fontSize: '0.7rem' }}
                                     >
-                                      克隆
-                                    </button>
+                                      删除
+                                    </span>
+                                  </>
+                                ) : (
+                                  <>
+                                    {task.resultUrl && (
+                                      <>
+                                        <button
+                                          className="btn btn-small"
+                                          onClick={() => handleClone(task)}
+                                          title="克隆此任务的提示词"
+                                        >
+                                          克隆
+                                        </button>
+                                        <button
+                                          className="btn btn-secondary btn-small"
+                                          data-download={task.taskId}
+                                          onClick={() => handleDownload(task.resultUrl, task.taskId)}
+                                        >
+                                          下载
+                                        </button>
+                                      </>
+                                    )}
                                     <button
-                                      className="btn btn-secondary btn-small"
-                                      data-download={task.taskId}
-                                      onClick={() => handleDownload(task.resultUrl, task.taskId)}
+                                      className="btn btn-secondary btn-small btn-icon"
+                                      onClick={() => handleDelete(task.taskId)}
+                                      title="删除"
                                     >
-                                      下载
+                                      ×
                                     </button>
                                   </>
                                 )}
-                                <button
-                                  className="btn btn-secondary btn-small btn-icon"
-                                  onClick={() => handleDelete(task.taskId)}
-                                  title="删除"
-                                >
-                                  ×
-                                </button>
                               </div>
                             </div>
                           </div>
