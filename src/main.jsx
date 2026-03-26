@@ -2993,8 +2993,8 @@ function App() {
                       <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
                         <button
                           onClick={() => {
-                            // 获取当前页面最多10个有视频URL的任务
-                            const currentPageTasks = tasks.filter(t => t.resultUrl).slice(0, 10);
+                            // 获取当前页面最多20个有视频URL的任务
+                            const currentPageTasks = tasks.filter(t => t.resultUrl).slice(0, 20);
                             if (currentPageTasks.length === 0) {
                               showToast('当前页面没有可下载的视频');
                               return;
